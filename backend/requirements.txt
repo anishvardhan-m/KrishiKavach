@@ -13,3 +13,8 @@ geoalchemy2==0.20.0
 alembic==1.19.2
 python-dotenv==1.2.3
 httpx==0.28.1
+
+# ML (required for PREDICTION_MODE=real; install into venv separately):
+#   ./venv/bin/pip install torch torchvision
+torch>=2.14.0
+torchvision>=0.29.0

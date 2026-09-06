@@ -37,6 +37,11 @@ PlantVillage/
 "Individual Weed_Species/"
 UAV/
 
+# Trained model artifacts (regenerate via ml/train_tomato.py)
+backend/ml/artifacts/*.pt
+backend/ml/artifacts/*.pth
+# Metadata + class index ARE committed (small + needed for deployment).
+
 # npm lock files (keep package-lock.json for reproducible installs)
 # yarn.lock
 # pnpm-lock.yaml

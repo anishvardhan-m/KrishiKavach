@@ -1,0 +1,124 @@
+{
+  "model_architecture": "MobileNetV2",
+  "pretrained_weights": "MobileNet_V2_Weights.DEFAULT",
+  "domain": "PlantVillage tomato leaf images only",
+  "num_classes": 10,
+  "class_names": [
+    "Tomato_Bacterial_spot",
+    "Tomato_Early_blight",
+    "Tomato_Late_blight",
+    "Tomato_Leaf_Mold",
+    "Tomato_Septoria_leaf_spot",
+    "Tomato_Spider_mites_Two_spotted_spider_mite",
+    "Tomato__Target_Spot",
+    "Tomato__Tomato_YellowLeaf__Curl_Virus",
+    "Tomato__Tomato_mosaic_virus",
+    "Tomato_healthy"
+  ],
+  "image_size": 224,
+  "normalization": {
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ]
+  },
+  "training": {
+    "epochs": 3,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "seed": 42,
+    "device": "mps",
+    "train_seconds": 440.7194769382477
+  },
+  "dataset": {
+    "total_tomato_images": 16011,
+    "train_images": 12809,
+    "val_images": 3202
+  },
+  "metrics": {
+    "final_val_accuracy": 0.9762648344784509,
+    "final_val_correct": 3126,
+    "final_val_total": 3202,
+    "per_class_accuracy": {
+      "Tomato_Bacterial_spot": {
+        "correct": 399,
+        "total": 425,
+        "accuracy": 0.9388235294117647
+      },
+      "Tomato_Early_blight": {
+        "correct": 191,
+        "total": 200,
+        "accuracy": 0.955
+      },
+      "Tomato_Late_blight": {
+        "correct": 373,
+        "total": 382,
+        "accuracy": 0.9764397905759162
+      },
+      "Tomato_Leaf_Mold": {
+        "correct": 186,
+        "total": 190,
+        "accuracy": 0.9789473684210527
+      },
+      "Tomato_Septoria_leaf_spot": {
+        "correct": 333,
+        "total": 354,
+        "accuracy": 0.940677966101695
+      },
+      "Tomato_Spider_mites_Two_spotted_spider_mite": {
+        "correct": 334,
+        "total": 335,
+        "accuracy": 0.9970149253731343
+      },
+      "Tomato__Target_Spot": {
+        "correct": 278,
+        "total": 281,
+        "accuracy": 0.9893238434163701
+      },
+      "Tomato__Tomato_YellowLeaf__Curl_Virus": {
+        "correct": 639,
+        "total": 642,
+        "accuracy": 0.9953271028037384
+      },
+      "Tomato__Tomato_mosaic_virus": {
+        "correct": 75,
+        "total": 75,
+        "accuracy": 1.0
+      },
+      "Tomato_healthy": {
+        "correct": 318,
+        "total": 318,
+        "accuracy": 1.0
+      }
+    }
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 0.268591007643691,
+      "val_accuracy": 0.9537788881948782
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.13564717549534316,
+      "val_accuracy": 0.97158026233604
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.08324557323803043,
+      "val_accuracy": 0.9762648344784509
+    }
+  ],
+  "limitations": [
+    "Trained on PlantVillage lab images only. Real field photos may differ in lighting, angle, and disease stage.",
+    "Covers 11 tomato leaf classes \u2014 does NOT cover other crops (cotton, soybean, rice, sugarcane, wheat, pigeon pea, sorghum, or any Maharashtra non-tomato crop).",
+    "PlantVillage classes are preserved verbatim \u2014 no relabelling."
+  ]
+}

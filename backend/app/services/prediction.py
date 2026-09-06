@@ -8,8 +8,9 @@ clearly indicates whether it is a REAL trained model or DEMO/seed behavior.
 
 Architecture:
     PredictionService (ABC)
-    ├── DemoPredictionService   <- current default; marks output as DEMO
-    └── RealPredictionService  <- future; loads an ONNX/Torch model
+    ├── DemoPredictionService   <- default; marks output as DEMO
+    └── RealPredictionService   <- loads the trained MobileNetV2 model
+                                    (PlantVillage Tomato subset)
 
 Usage:
     from app.services.prediction import get_prediction_service
@@ -18,11 +19,14 @@ Usage:
 """
 from __future__ import annotations
 
+import json
+import os
 import random
 import hashlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 
@@ -526,39 +530,317 @@ class DemoPredictionService(PredictionService):
 
 
 # ---------------------------------------------------------------------------
-# Real Prediction Service (placeholder — future)
+# Real Prediction Service — trained MobileNetV2 on PlantVillage Tomato subset
+# ---------------------------------------------------------------------------
+# Per Correction #1 — this service honestly reports its domain:
+#   "MobileNetV2 — PlantVillage Tomato"
+# It MUST NOT be presented as covering other crops.
 # ---------------------------------------------------------------------------
 
+# Map PlantVillage folder class names to human-readable labels used by the
+# existing PLANTVILLAGE_CATALOG. This is the ONLY mapping we perform — no
+# class names are relabelled or reinterpreted; they are simply renamed for UI.
+CLASS_DISPLAY: dict[str, dict[str, str]] = {
+    "Tomato_Bacterial_spot":                {"disease": "Tomato Bacterial Spot", "crop": "Tomato", "slug": "tomato-bacterial-spot"},
+    "Tomato_Early_blight":                  {"disease": "Tomato Early Blight", "crop": "Tomato", "slug": "tomato-early-blight"},
+    "Tomato_Late_blight":                   {"disease": "Tomato Late Blight", "crop": "Tomato", "slug": "tomato-late-blight"},
+    "Tomato_Leaf_Mold":                     {"disease": "Tomato Leaf Mold", "crop": "Tomato", "slug": "tomato-leaf-mold"},
+    "Tomato_Septoria_leaf_spot":            {"disease": "Tomato Septoria Leaf Spot", "crop": "Tomato", "slug": "tomato-seeptoria-leaf-spot"},
+    "Tomato_Spider_mites_Two_spotted_spider_mite": {"disease": "Tomato Spider Mites", "crop": "Tomato", "slug": "tomato-spider-mites"},
+    "Tomato__Target_Spot":                  {"disease": "Tomato Target Spot", "crop": "Tomato", "slug": "tomato-target-spot"},
+    "Tomato__Tomato_YellowLeaf__Curl_Virus": {"disease": "Tomato Yellow Leaf Curl Virus", "crop": "Tomato", "slug": "tomato-tylcv"},
+    "Tomato__Tomato_mosaic_virus":          {"disease": "Tomato Mosaic Virus", "crop": "Tomato", "slug": "tomato-tobacco-mosaic-virus"},
+    "Tomato_healthy":                       {"disease": "Healthy", "crop": "Unknown", "slug": "healthy"},
+}
+
+
+def _default_artifacts_dir() -> Path:
+    """Locate the ml/artifacts directory relative to the backend root."""
+    # backend/app/services/prediction.py -> backend/ml/artifacts
+    return Path(__file__).resolve().parents[2] / "ml" / "artifacts"
+
+
 class RealPredictionService(PredictionService):
-    """Production prediction service — loads an actual trained model.
+    """Production prediction service — MobileNetV2 trained on PlantVillage Tomato.
 
-    Per Correction #1 — this service must NEVER be used in demo without
-    a properly trained and validated model.
-
-    Placeholder until a validated Maharashtra-crop model is available.
+    Per Correction #1 — this service must NEVER be used to make claims about
+    crops outside its training domain. The model only recognises PlantVillage
+    tomato leaf classes; for cotton, soybean, sugarcane, rice, wheat, pigeon
+    pea, sorghum, or any other Maharashtra crop it returns an honest
+    unsupported-crop signal (or no confident prediction).
     """
 
-    def __init__(self, model_path: str):
-        self._model_path = model_path
-        # TODO: Load ONNX/Torch model here
+    IMAGE_SIZE = 224
+    NORMALIZE_MEAN = (0.485, 0.456, 0.406)
+    NORMALIZE_STD = (0.229, 0.224, 0.225)
+
+    # Crops the model knows nothing about. If context.crop_type names one of
+    # these, we refuse to return a tomato-disease label.
+    UNSUPPORTED_CROPS: set[str] = {
+        "cotton", "soybean", "soya", "sugarcane", "rice", "paddy",
+        "wheat", "pigeon pea", "tur", "arhar", "sorghum", "jowar",
+        "bajra", "maize", "corn", "onion", "grape", "apple", "cherry",
+        "peach", "blueberry", "raspberry", "strawberry", "squash",
+        "bell pepper", "pepper", "potato",
+    }
+
+    def __init__(
+        self,
+        model_path: str | os.PathLike[str] | None = None,
+        class_index_path: str | os.PathLike[str] | None = None,
+    ):
+        artifacts_dir = _default_artifacts_dir()
+        self._model_path = Path(model_path) if model_path else artifacts_dir / "tomato_model.pt"
+        self._class_index_path = Path(class_index_path) if class_index_path else artifacts_dir / "tomato_class_index.json"
+        self._model = None
+        self._class_names: list[str] = []
+        self._load_error: str | None = None
+        self._load()
 
     @property
     def name(self) -> str:
-        return "RealPredictionService (ML Model)"
+        return "RealPredictionService (MobileNetV2 — PlantVillage Tomato)"
 
     @property
     def is_demo(self) -> bool:
         return False
 
-    async def predict(self, image_bytes: bytes, context: dict) -> DiseasePrediction:
-        # TODO: Implement actual model inference
-        raise NotImplementedError("RealPredictionService requires a trained model.")
+    @property
+    def model_source(self) -> str:
+        return "MobileNetV2 — PlantVillage Tomato"
 
-    async def recommend(self, prediction: DiseasePrediction, context: dict) -> Recommendation:
-        raise NotImplementedError("RealPredictionService requires a trained model.")
+    @property
+    def is_ready(self) -> bool:
+        return self._model is not None and not self._load_error
 
-    def estimate_severity(self, confidence: float, disease: str) -> tuple[Severity, bool]:
-        raise NotImplementedError("RealPredictionService requires a trained model.")
+    def _load(self) -> None:
+        try:
+            import torch
+            from PIL import Image
+        except ImportError as exc:
+            self._load_error = (
+                f"ML dependencies not installed ({exc}). "
+                "Install torch + torchvision into the backend venv."
+            )
+            return
+
+        if not self._model_path.is_file():
+            self._load_error = (
+                f"Model artifact not found at {self._model_path}. "
+                "Run backend/ml/train_tomato.py to produce it."
+            )
+            return
+        if not self._class_index_path.is_file():
+            self._load_error = (
+                f"Class index not found at {self._class_index_path}."
+            )
+            return
+
+        try:
+            with self._class_index_path.open() as f:
+                self._class_names = json.load(f)
+            self._model = torch.jit.load(
+                str(self._model_path), map_location="cpu",
+            )
+            self._model.eval()
+        except Exception as exc:
+            self._load_error = f"Failed to load model: {exc}"
+            self._model = None
+
+    def _preprocess(self, image_bytes: bytes):
+        """Load + preprocess image bytes to a (1, 3, 224, 224) tensor."""
+        import torch
+        from PIL import Image
+        from torchvision import transforms
+        from io import BytesIO
+
+        img = Image.open(BytesIO(image_bytes)).convert("RGB")
+        tf = transforms.Compose([
+            transforms.Resize((self.IMAGE_SIZE, self.IMAGE_SIZE)),
+            transforms.ToTensor(),
+            transforms.Normalize(self.NORMALIZE_MEAN, self.NORMALIZE_STD),
+        ])
+        tensor = tf(img).unsqueeze(0)
+        return tensor
+
+    def _infer(self, image_bytes: bytes) -> tuple[int, float, list[float]]:
+        """Run model inference. Returns (top_index, top_conf, all_probs)."""
+        import torch
+        if not self.is_ready:
+            raise RuntimeError(
+                f"RealPredictionService is not ready: {self._load_error}"
+            )
+        x = self._preprocess(image_bytes)
+        with torch.no_grad():
+            logits = self._model(x)
+        probs = torch.softmax(logits, dim=1)[0].tolist()
+        top_idx = int(max(range(len(probs)), key=lambda i: probs[i]))
+        return top_idx, float(probs[top_idx]), [float(p) for p in probs]
+
+    def _is_unsupported_crop(self, context: dict) -> str | None:
+        crop_type = (context.get("crop_type") or "").strip().lower()
+        if crop_type and crop_type in self.UNSUPPORTED_CROPS:
+            return crop_type
+        return None
+
+    def _unsupported_prediction(
+        self, crop_type: str,
+    ) -> DiseasePrediction:
+        """Build a prediction that honestly says the model can't classify this."""
+        return DiseasePrediction(
+            disease="Unsupported crop (outside PlantVillage Tomato domain)",
+            crop=crop_type.title(),
+            confidence=0.0,
+            severity=Severity.LOW,
+            uncertainty_flag=True,
+            description=(
+                f"This model only recognises PlantVillage tomato leaf classes. "
+                f"It has NOT been trained on '{crop_type}', and its predictions "
+                f"for that crop would be unreliable. Please consult a local "
+                f"agriculture extension officer for this crop."
+            ),
+            disease_slug="unsupported-crop",
+            is_demo=False,
+            model_source=self.model_source,
+            alternatives=[],
+        )
+
+    async def predict(
+        self, image_bytes: bytes, context: dict[str, Any],
+    ) -> DiseasePrediction:
+        if not self.is_ready:
+            raise RuntimeError(
+                f"RealPredictionService not available: {self._load_error}"
+            )
+
+        # Domain safety: refuse to fabricate predictions for unsupported crops.
+        unsupported = self._is_unsupported_crop(context)
+        if unsupported:
+            return self._unsupported_prediction(unsupported)
+
+        top_idx, top_conf, all_probs = self._infer(image_bytes)
+
+        # Rank all classes for alternatives.
+        ranked = sorted(
+            enumerate(all_probs), key=lambda kv: kv[1], reverse=True,
+        )
+
+        primary_class = self._class_names[top_idx]
+        display = CLASS_DISPLAY.get(primary_class)
+        if display is None:
+            # Defensive fallback — if a new class name appears in the model
+            # index that we don't have a display label for, surface the raw
+            # name rather than guessing.
+            disease_name = primary_class.replace("Tomato_", "Tomato ").replace("_", " ")
+            crop_name = "Tomato"
+            slug = self._slugify(primary_class)
+        else:
+            disease_name = display["disease"]
+            crop_name = display["crop"]
+            slug = display["slug"]
+
+        # Severity + uncertainty from confidence.
+        severity, uncertainty = self.estimate_severity(top_conf, disease_name)
+
+        # Catalog description if available.
+        catalog_entry = next(
+            (e for e in PLANTVILLAGE_CATALOG if e["disease"] == disease_name),
+            None,
+        )
+        description = (
+            catalog_entry["description"] if catalog_entry
+            else f"Detected {disease_name} on {crop_name} (PlantVillage class)."
+        )
+
+        # Alternatives: top-K (excluding the top-1 itself).
+        alternatives: list[dict] = []
+        for idx, prob in ranked[1:4]:
+            cls = self._class_names[idx]
+            d = CLASS_DISPLAY.get(cls)
+            alternatives.append({
+                "disease": (d["disease"] if d else cls),
+                "crop": (d["crop"] if d else "Tomato"),
+                "confidence": round(prob, 4),
+            })
+
+        return DiseasePrediction(
+            disease=disease_name,
+            crop=crop_name,
+            confidence=round(top_conf, 4),
+            severity=severity,
+            uncertainty_flag=uncertainty,
+            description=description,
+            disease_slug=slug,
+            is_demo=False,
+            model_source=self.model_source,
+            alternatives=alternatives,
+        )
+
+    async def recommend(
+        self, prediction: DiseasePrediction, context: dict,
+    ) -> Recommendation:
+        # If we refused to predict (unsupported crop), don't fabricate a
+        # recommendation — direct the user to a human expert.
+        if prediction.disease_slug == "unsupported-crop":
+            return Recommendation(
+                disease=prediction.disease,
+                recommendation_text=(
+                    "This image is outside the trained model domain. "
+                    "Please consult your local agriculture extension officer "
+                    "or a Krishi Vigyan Kendra (KVK) for diagnosis."
+                ),
+                steps=[
+                    "Take a clear close-up photo of the affected leaf/plant.",
+                    "Note the district, crop variety, and recent weather.",
+                    "Visit the nearest KVK or call the Maharashtra agri helpline.",
+                ],
+                warning=(
+                    "Do not apply pesticides based on unverified AI guesses."
+                ),
+                escalate=True,
+                follow_up_days=1,
+                context=(
+                    f"District: {context.get('district')}"
+                    if context.get("district") else None
+                ),
+            )
+
+        # Match against the existing PlantVillage catalog so treatment
+        # recommendations remain consistent with the demo service.
+        entry = next(
+            (e for e in PLANTVILLAGE_CATALOG if e["disease"] == prediction.disease),
+            PLANTVILLAGE_CATALOG[-1],  # Healthy fallback
+        )
+        context_lines: list[str] = []
+        if district := context.get("district"):
+            context_lines.append(f"District: {district}")
+        if soil_moisture := context.get("soil_moisture_percent"):
+            context_lines.append(f"Soil moisture: {soil_moisture}%")
+        context_str = " | ".join(context_lines) if context_lines else None
+
+        return Recommendation(
+            disease=prediction.disease,
+            recommendation_text=entry["recommendation_text"],
+            steps=entry.get("steps", []),
+            warning=entry.get("warning"),
+            escalate=entry.get("escalate", False),
+            follow_up_days=entry.get("follow_up_days", 7),
+            context=context_str,
+        )
+
+    def estimate_severity(
+        self, confidence: float, disease: str,
+    ) -> tuple[Severity, bool]:
+        if confidence >= CONFIDENCE_CERTAIN:
+            entry = next(
+                (e for e in PLANTVILLAGE_CATALOG if e["disease"] == disease),
+                None,
+            )
+            severity_hint = entry["severity_hint"] if entry else "medium"
+            return Severity(severity_hint), False
+        if confidence >= CONFIDENCE_UNCERTAIN:
+            return Severity.MEDIUM, True
+        return Severity.HIGH, True
 
 
 # ---------------------------------------------------------------------------
@@ -571,14 +853,16 @@ def get_prediction_service(mode: str = "demo") -> PredictionService:
     Args:
         mode: "demo" (default) or "real".
               Set PREDICTION_MODE env var or call with mode="real"
-              for production (requires a trained model).
+              to use the trained MobileNetV2 model.
     """
     if mode == "real":
-        # TODO: Load from config
-        raise RuntimeError(
-            "RealPredictionService is not yet implemented. "
-            "A trained ML model must be loaded first."
-        )
+        service = RealPredictionService()
+        if not service.is_ready:
+            raise RuntimeError(
+                f"RealPredictionService is not ready: {service._load_error}. "
+                "Either run ml/train_tomato.py or fall back to demo mode."
+            )
+        return service
     return DemoPredictionService()
 
 
