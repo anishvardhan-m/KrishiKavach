@@ -1,7 +1,7 @@
 // KrishiKavach — voice-first farmer UI (SIH26131 vertical slice).
 //
 // Flow:
-//   1. App opens → immediate voice greeting.
+//   1. App opens → immediate voice greeting in the chosen language.
 //   2. Main screen with 5 large color-coded buttons.
 //   3. Every action follows the reusable pattern:
 //        prompt → "Please speak. I am listening." → listen → interpret → respond.
@@ -12,10 +12,13 @@ import { VoiceBanner } from "./components/VoiceBanner"
 import { ResultCard } from "./components/ResultCard"
 import { RiskCard } from "./components/RiskCard"
 import { ExpertCard } from "./components/ExpertCard"
+import { LanguagePicker } from "./components/LanguagePicker"
 import { useVoiceController } from "./hooks/useVoiceController"
 import { usePhotoCapture } from "./hooks/usePhotoCapture"
 import { listOutbreaks, predictImage } from "./services/api"
 import type { CaseCreateResponse, DiseaseReport } from "./types"
+import type { VoiceLanguage } from "./services/voice"
+import { t } from "./i18n/strings"
 
 type Screen =
   | { name: "home" }
@@ -24,10 +27,12 @@ type Screen =
   | { name: "result"; data: CaseCreateResponse }
   | { name: "risk"; reports: DiseaseReport[]; loading: boolean; error: string | null }
   | { name: "expert" }
-  | { name: "listening-prompt" }
+
+const DEFAULT_LANGUAGE: VoiceLanguage = "hi-IN"
 
 export default function App() {
-  const voice = useVoiceController("en-IN")
+  const [language, setLanguage] = useState<VoiceLanguage>(DEFAULT_LANGUAGE)
+  const voice = useVoiceController(language)
   const photo = usePhotoCapture()
 
   const [screen, setScreen] = useState<Screen>({ name: "home" })
@@ -35,7 +40,6 @@ export default function App() {
   const [predictError, setPredictError] = useState<string | null>(null)
   const [hasGreeted, setHasGreeted] = useState(false)
 
-  // ---------- Voice helpers ----------
   const speak = useCallback(
     async (text: string) => {
       await voice.controller.speak(text)
@@ -47,19 +51,14 @@ export default function App() {
   useEffect(() => {
     if (hasGreeted) return
     setHasGreeted(true)
-    const greeting =
-      "Welcome to Krishi Kavach. I am your farming assistant. " +
-      "Tap the green button to take a photo of your crop. " +
-      "I will tell you what is wrong and what to do."
+    const greeting = t("greeting_initial", language)
     setBannerMessage(greeting)
     speak(greeting).catch(() => {
       /* silent — text is still visible */
     })
-    // Warn up front if mic is not available
     if (!voice.controller.isRecognitionSupported()) {
       setBannerMessage(
-        greeting +
-          " (Microphone not available on this device — voice input disabled.)",
+        greeting + "  (" + t("voice_mic_unavailable", language) + ")",
       )
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -67,28 +66,29 @@ export default function App() {
 
   // ---------- Action: Take Photo ----------
   const handleTakePhoto = useCallback(async () => {
-    await speak(
-      "Please take a clear photo of the sick leaf or plant. " +
-        "Make sure the sun is on it, not behind it.",
-    )
+    const msg =
+      language === "hi-IN"
+        ? "कृपया पौधे की साफ़ फोटो लें। सूरज पौधे पर हो, पीछे नहीं।"
+        : "Please take a clear photo of the sick leaf or plant. Make sure the sun is on it, not behind it."
+    await speak(msg)
     photo.openCamera()
-  }, [speak, photo])
+  }, [speak, photo, language])
 
   // ---------- After photo is chosen ----------
   const handlePredict = useCallback(async () => {
     if (!photo.pendingFile) return
     setPredictError(null)
     setScreen({ name: "predicting" })
-    setBannerMessage("Looking at the photo...")
-    await speak("Looking at the photo. Please wait.")
+    const loadingMsg = t("loading_photo", language)
+    setBannerMessage(loadingMsg)
+    await speak(loadingMsg)
     try {
-      const result = await predictImage(photo.pendingFile)
+      const result = await predictImage(photo.pendingFile, undefined, undefined, undefined, language)
       setScreen({ name: "result", data: result })
-      // Speak the result
       const summary =
         result.prediction.disease +
         (result.prediction.crop && result.prediction.crop !== "Unknown"
-          ? " on " + result.prediction.crop
+          ? " — " + result.prediction.crop
           : "") +
         ". " +
         result.prediction.recommendation_text
@@ -98,17 +98,20 @@ export default function App() {
       const msg = e?.message || "Could not reach the server."
       setPredictError(msg)
       setScreen({ name: "photo-preview" })
-      setBannerMessage("Sorry, something went wrong. " + msg)
-      await speak("Sorry, something went wrong. " + msg)
+      const errMsg =
+        language === "hi-IN"
+          ? "माफ़ कीजिए, कुछ गलत हो गया। " + msg
+          : "Sorry, something went wrong. " + msg
+      setBannerMessage(errMsg)
+      await speak(errMsg)
     }
-  }, [photo.pendingFile, speak])
+  }, [photo.pendingFile, speak, language])
 
   // ---------- Listen-again / result ----------
   const handleSpeakResultAgain = useCallback(async () => {
     if (screen.name !== "result") return
     const p = screen.data.prediction
-    const summary =
-      p.disease + ". " + p.recommendation_text
+    const summary = p.disease + ". " + p.recommendation_text
     setBannerMessage(summary)
     await speak(summary)
   }, [screen, speak])
@@ -117,9 +120,13 @@ export default function App() {
   const handleResultDone = useCallback(() => {
     photo.reset()
     setScreen({ name: "home" })
-    setBannerMessage("Done. What would you like to do next?")
-    speak("Done. What would you like to do next?").catch(() => {})
-  }, [speak, photo])
+    const msg =
+      language === "hi-IN"
+        ? "हो गया। अब आगे क्या करना चाहेंगे?"
+        : "Done. What would you like to do next?"
+    setBannerMessage(msg)
+    speak(msg).catch(() => {})
+  }, [speak, photo, language])
 
   // ---------- Action: What should I do? ----------
   const handleWhatToDo = useCallback(async () => {
@@ -127,101 +134,116 @@ export default function App() {
       handleSpeakResultAgain()
       return
     }
-    // Generic advice — voice interaction pattern
-    await speak(
-      "Tell me what you see. Is the leaf yellow, brown, or spotted? " +
-        "I will listen and tell you what to do.",
-    )
+    const prompt =
+      language === "hi-IN"
+        ? "बताइए आप क्या देख रहे हैं। पत्ता पीला है, भूरा है, या धब्बेदार है? मैं सुनकर बताऊँगा क्या करना है।"
+        : "Tell me what you see. Is the leaf yellow, brown, or spotted? I will listen and tell you what to do."
+    await speak(prompt)
     const reply = await voice.controller.promptAndListen()
     if (!reply) {
-      const msg = "I did not hear anything. Please try again."
+      const msg =
+        language === "hi-IN"
+          ? "मुझे कुछ सुनाई नहीं दिया। कृपया फिर कोशिश कीजिए।"
+          : "I did not hear anything. Please try again."
       setBannerMessage(msg)
       await speak(msg)
       return
     }
-    setBannerMessage("You said: " + reply)
-    // Map common farmer phrases to simple guidance
+    setBannerMessage(
+      (language === "hi-IN" ? "आपने कहा: " : "You said: ") + reply,
+    )
     const text = reply.toLowerCase()
     let response =
-      "I heard you. For any plant disease, the safest first step is to " +
-      "remove the worst affected leaves and take a clear photo so I can " +
-      "give exact advice."
-    if (text.includes("yellow")) {
+      language === "hi-IN"
+        ? "मैंने आपकी बात सुनी। किसी भी पौधे रोग के लिए सबसे सुरक्षित पहला कदम है सबसे ज़्यादा प्रभावित पत्ते हटा दें और एक साफ़ फोटो लेकर मुझे भेजें, ताकि मैं सही सलाह दे सकूँ।"
+        : "I heard you. For any plant disease, the safest first step is to remove the worst affected leaves and take a clear photo so I can give exact advice."
+
+    if (text.includes("yellow") || text.includes("पीला") || text.includes("피")) {
       response =
-        "Yellow leaves often mean a nutrient problem or over-watering. " +
-        "Check the soil moisture and reduce watering for a few days. " +
-        "If the problem spreads, tap the green button to send me a photo."
-    } else if (text.includes("spot") || text.includes("brown")) {
+        language === "hi-IN"
+          ? "पीले पत्ते अक्सर पोषण की कमी या अधिक पानी का संकेत हैं। मिट्टी की नमी जाँचें और कुछ दिन पानी कम दें। अगर समस्या बढ़े तो हरा बटन दबाकर फोटो भेजें।"
+          : "Yellow leaves often mean a nutrient problem or over-watering. Check the soil moisture and reduce watering for a few days. If the problem spreads, tap the green button to send me a photo."
+    } else if (text.includes("spot") || text.includes("brown") || text.includes("धब्बा") || text.includes("भूरा")) {
       response =
-        "Spots or brown patches usually mean a fungal disease. " +
-        "Remove the affected leaves and avoid watering from above. " +
-        "Take a photo and I will tell you the exact treatment."
-    } else if (text.includes("insect") || text.includes("pest") || text.includes("bug")) {
+        language === "hi-IN"
+          ? "धब्बे या भूरे हिस्से आमतौर पर फफूंद रोग होते हैं। प्रभावित पत्ते हटा दें और ऊपर से पानी ना दें। एक फोटो लेकर मुझे भेजें, मैं सही दवाई बताऊँगा।"
+          : "Spots or brown patches usually mean a fungal disease. Remove the affected leaves and avoid watering from above. Take a photo and I will tell you the exact treatment."
+    } else if (
+      text.includes("insect") ||
+      text.includes("pest") ||
+      text.includes("bug") ||
+      text.includes("कीट")
+    ) {
       response =
-        "For insects, neem oil spray at five millilitres per litre of " +
-        "water works well for most pests. Spray in the evening. " +
-        "Send me a photo if it is a new pest."
+        language === "hi-IN"
+          ? "कीटों के लिए 5 मिली नीम तेल प्रति लीटर पानी में मिलाकर शाम को छिड़कें। अगर यह नया कीट है तो मुझे फोटो भेजें।"
+          : "For insects, neem oil spray at five millilitres per litre of water works well for most pests. Spray in the evening. Send me a photo if it is a new pest."
     }
     setBannerMessage(response)
     await speak(response)
-  }, [screen, speak, voice.controller, handleSpeakResultAgain])
+  }, [screen, speak, voice.controller, language, handleSpeakResultAgain])
 
   // ---------- Action: Nearby Risk ----------
   const handleNearbyRisk = useCallback(async () => {
     setScreen({ name: "risk", reports: [], loading: true, error: null })
-    setBannerMessage("Looking for nearby disease alerts...")
-    await speak("Looking for nearby disease alerts. Please wait.")
+    const loadingMsg = t("loading_outbreaks", language)
+    setBannerMessage(loadingMsg)
+    await speak(loadingMsg)
     try {
       const reports = await listOutbreaks()
       setScreen({ name: "risk", reports, loading: false, error: null })
       if (reports.length === 0) {
-        const msg =
-          "Good news. No disease outbreaks have been reported in your area right now."
+        const msg = t("no_outbreaks", language)
         setBannerMessage(msg)
         await speak(msg)
       } else {
         const first = reports[0]
-        const msg = `${reports.length} outbreak report${
-          reports.length === 1 ? "" : "s"
-        } nearby. The most recent: ${first.disease_type || "a disease"} in ${
-          first.district || "your area"
-        } at ${
-          RISK_LABEL[first.risk_level || "medium"]
-        }.`
+        const riskLabel = RISK_LABEL[first.risk_level || "medium"]
+        const msg =
+          language === "hi-IN"
+            ? `${reports.length} रोग रिपोर्ट आस-पास मिली। सबसे पहली: ${first.disease_type || "एक रोग"} ${first.district || "आपके क्षेत्र"} में, ${riskLabel}।`
+            : `${reports.length} outbreak report${reports.length === 1 ? "" : "s"} nearby. The most recent: ${first.disease_type || "a disease"} in ${first.district || "your area"} at ${riskLabel}.`
         setBannerMessage(msg)
         await speak(msg)
       }
     } catch (e: any) {
       const msg = e?.message || "Could not load outbreak data."
       setScreen({ name: "risk", reports: [], loading: false, error: msg })
-      setBannerMessage("Sorry, " + msg)
-      await speak("Sorry. " + msg)
+      const errMsg =
+        language === "hi-IN"
+          ? "माफ़ कीजिए। " + msg
+          : "Sorry. " + msg
+      setBannerMessage(errMsg)
+      await speak(errMsg)
     }
-  }, [speak])
+  }, [speak, language])
 
   // ---------- Action: Expert Help ----------
   const handleExpertHelp = useCallback(async () => {
     setScreen({ name: "expert" })
     const msg =
-      "An expert can look at your photo. Call the Krishi Vigyan Kendra " +
-      "helpline at 1800-103-AGRI. It is free and open every day from " +
-      "six in the morning until ten at night."
+      language === "hi-IN"
+        ? "एक विशेषज्ञ आपकी फोटो देख सकते हैं। कृषि विज्ञान केंद्र हेल्पलाइन 1800-103-AGRI पर कॉल करें। यह मुफ़्त है और रोज़ सुबह 6 बजे से रात 10 बजे तक खुली रहती है।"
+        : "An expert can look at your photo. Call the Krishi Vigyan Kendra helpline at 1800-103-AGRI. It is free and open every day from six in the morning until ten at night."
     setBannerMessage(msg)
     await speak(msg)
-  }, [speak])
+  }, [speak, language])
 
-  // ---------- Action: Listen Again (re-speak current banner) ----------
+  // ---------- Action: Listen Again ----------
   const handleListenAgain = useCallback(async () => {
     if (!bannerMessage) {
-      const msg = "There is nothing new to say right now."
+      const msg =
+        language === "hi-IN"
+          ? "अभी कहने के लिए कुछ नया नहीं है।"
+          : "There is nothing new to say right now."
       setBannerMessage(msg)
       await speak(msg)
       return
     }
     await speak(bannerMessage)
-  }, [bannerMessage, speak])
+  }, [bannerMessage, speak, language])
 
-  // ---------- File input change → preview then predict ----------
+  // ---------- File input change → preview then prompt ----------
   const onFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       photo.onFileSelected(e)
@@ -232,11 +254,11 @@ export default function App() {
   useEffect(() => {
     if (photo.pendingFile && screen.name === "home") {
       setScreen({ name: "photo-preview" })
-      const msg = "I see the photo. Tap the green button at the bottom to send it for analysis."
+      const msg = t("tap_photo_to_send", language)
       setBannerMessage(msg)
       speak(msg)
     }
-  }, [photo.pendingFile, screen.name, speak])
+  }, [photo.pendingFile, screen.name, speak, language])
 
   // ---------- Render ----------
   return (
@@ -244,9 +266,18 @@ export default function App() {
       <header className="app-header">
         <div className="app-title">
           <span className="leaf" aria-hidden="true">🌿</span>
-          <span>KrishiKavach</span>
+          <span>{t("app_title", language)}</span>
         </div>
-        <span className="demo-badge">SIH DEMO</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span className="demo-badge">{t("demo_badge", language)}</span>
+          <LanguagePicker
+            current={language}
+            onChange={(l) => {
+              setLanguage(l)
+              voice.controller.setLanguage(l)
+            }}
+          />
+        </div>
       </header>
 
       <VoiceBanner
@@ -255,43 +286,48 @@ export default function App() {
         message={bannerMessage}
       />
 
+      {voice.error && (
+        <div className="error">
+          {t("voice_unavailable_title", language)}: {voice.error}
+        </div>
+      )}
+
       {screen.name === "home" && (
         <div className="actions">
           <ActionButton
             color="green"
             icon="📸"
-            label="Take Photo"
-            sublabel="Photo of your sick crop"
+            label={t("action_take_photo", language)}
+            sublabel={t("action_take_photo_sub", language)}
             onClick={handleTakePhoto}
-            disabled={!photo.openCamera}
           />
           <ActionButton
             color="blue"
             icon="❓"
-            label="What should I do?"
-            sublabel="Ask by speaking"
+            label={t("action_what_to_do", language)}
+            sublabel={t("action_what_to_do_sub", language)}
             onClick={handleWhatToDo}
             disabled={!voice.controller.isRecognitionSupported()}
           />
           <ActionButton
             color="orange"
             icon="⚠️"
-            label="Nearby Risk"
-            sublabel="Disease alerts in your area"
+            label={t("action_nearby_risk", language)}
+            sublabel={t("action_nearby_risk_sub", language)}
             onClick={handleNearbyRisk}
           />
           <ActionButton
             color="red"
             icon="🆘"
-            label="Expert Help"
-            sublabel="Call an agriculture expert"
+            label={t("action_expert_help", language)}
+            sublabel={t("action_expert_help_sub", language)}
             onClick={handleExpertHelp}
           />
           <ActionButton
             color="purple"
             icon="🔊"
-            label="Listen Again"
-            sublabel="Repeat the last message"
+            label={t("action_listen_again", language)}
+            sublabel={t("action_listen_again_sub", language)}
             onClick={handleListenAgain}
           />
         </div>
@@ -313,14 +349,14 @@ export default function App() {
             <ActionButton
               color="green"
               icon="🔍"
-              label="Send for Analysis"
-              sublabel="Find out what is wrong"
+              label={t("action_send_for_analysis", language)}
+              sublabel={t("action_send_for_analysis_sub", language)}
               onClick={handlePredict}
             />
             <ActionButton
               color="ghost"
               icon="📷"
-              label="Retake Photo"
+              label={t("action_retake_photo", language)}
               onClick={() => {
                 photo.reset()
                 setScreen({ name: "home" })
@@ -329,8 +365,8 @@ export default function App() {
             <ActionButton
               color="blue"
               icon="❓"
-              label="What should I do?"
-              sublabel="Ask by speaking"
+              label={t("action_what_to_do", language)}
+              sublabel={t("action_what_to_do_sub", language)}
               onClick={handleWhatToDo}
               disabled={!voice.controller.isRecognitionSupported()}
             />
@@ -342,7 +378,7 @@ export default function App() {
         <div className="card">
           <div className="loading">
             <div className="spinner" />
-            <div>Looking at your photo...</div>
+            <div>{t("thinking_about_photo", language)}</div>
           </div>
         </div>
       )}
@@ -351,6 +387,7 @@ export default function App() {
         <>
           <ResultCard
             prediction={screen.data.prediction}
+            language={language}
             onSpeakAgain={handleSpeakResultAgain}
             onDone={handleResultDone}
           />
@@ -358,8 +395,8 @@ export default function App() {
             <ActionButton
               color="red"
               icon="🆘"
-              label="Expert Help"
-              sublabel="Because we are not fully sure"
+              label={t("action_expert_help", language)}
+              sublabel={t("expert_help_recommended", language)}
               onClick={handleExpertHelp}
             />
           )}
@@ -371,20 +408,21 @@ export default function App() {
           reports={screen.reports}
           loading={screen.loading}
           error={screen.error}
+          language={language}
           onDone={() => setScreen({ name: "home" })}
           onSpeak={async () => {
             if (screen.reports.length === 0) {
-              await speak("No outbreaks reported in your area.")
+              await speak(t("no_outbreaks", language))
               return
             }
             const lines = screen.reports
               .slice(0, 3)
               .map((r) => {
-                return `${r.disease_type || "a disease"} in ${
-                  r.district || "your area"
-                }, ${RISK_LABEL[r.risk_level || "medium"]}, ${
-                  r.affected_farms
-                } farms affected.`
+                const riskLabel = RISK_LABEL[r.risk_level || "medium"]
+                if (language === "hi-IN") {
+                  return `${r.disease_type || "एक रोग"} ${r.district || "आपके क्षेत्र"} में, ${riskLabel}, ${r.affected_farms} खेत प्रभावित।`
+                }
+                return `${r.disease_type || "a disease"} in ${r.district || "your area"}, ${riskLabel}, ${r.affected_farms} farms affected.`
               })
               .join(" ")
             setBannerMessage(lines)
@@ -395,18 +433,19 @@ export default function App() {
 
       {screen.name === "expert" && (
         <ExpertCard
+          language={language}
           onDone={() => setScreen({ name: "home" })}
           onSpeak={async () => {
             const msg =
-              "Call 1800-103-AGRI. It is the Krishi Vigyan Kendra helpline, " +
-              "free, every day from six AM to ten PM."
+              language === "hi-IN"
+                ? "1800-103-AGRI पर कॉल करें। यह कृषि विज्ञान केंद्र हेल्पलाइन है, मुफ़्त, रोज़ सुबह 6 बजे से रात 10 बजे तक।"
+                : "Call 1800-103-AGRI. It is the Krishi Vigyan Kendra helpline, free, every day from six AM to ten PM."
             setBannerMessage(msg)
             await speak(msg)
           }}
         />
       )}
 
-      {/* Hidden inputs for camera + gallery */}
       <input
         ref={photo.cameraInputRef}
         type="file"
@@ -426,19 +465,17 @@ export default function App() {
       />
 
       <footer className="app-footer">
-        <div>KrishiKavach — SIH26131</div>
-        <div>Voice-first crop-health assistant for Maharashtra farmers</div>
-        <div style={{ marginTop: 6 }}>
-          Predictions use the demo rule-based service (clearly marked DEMO).
-        </div>
+        <div>{t("footer_brand", language)}</div>
+        <div>{t("footer_tagline", language)}</div>
+        <div style={{ marginTop: 6 }}>{t("footer_demo", language)}</div>
       </footer>
     </div>
   )
 }
 
-const RISK_LABEL: Record<string, string> = {
-  low: "low risk",
-  medium: "moderate risk",
-  high: "high risk",
-  critical: "critical",
+const RISK_LABEL: Record<string, { en: string; hi: string }> = {
+  low: { en: "low risk", hi: "कम जोखिम" },
+  medium: { en: "moderate risk", hi: "मध्यम जोखिम" },
+  high: { en: "high risk", hi: "उच्च जोखिम" },
+  critical: { en: "critical", hi: "गंभीर" },
 }

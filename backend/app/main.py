@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Depends
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,8 +40,12 @@ from app.schemas import (
     FeedbackResponse,
     HealthResponse,
     PredictionResult,
+    SpeakRequest,
+    TranscribeResponse,
     UploadResponse,
+    VoiceConfigResponse,
 )
+from app.services import omniroute
 from app.services.case_service import (
     advance_demo_days,
     create_case_from_prediction,
@@ -463,6 +467,139 @@ async def parse_voice_intent(payload: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Voice provider endpoints (OmniRoute STT/TTS)
+# ---------------------------------------------------------------------------
+# These endpoints are the only place that talks to the upstream voice API.
+# The frontend never sees the API key.
+# ---------------------------------------------------------------------------
+
+@app.get("/api/voice/config", response_model=VoiceConfigResponse, tags=["voice"])
+async def get_voice_config() -> VoiceConfigResponse:
+    """Return voice configuration for the frontend.
+
+    Includes the active provider, default language, and configured
+    STT/TTS model + voice — but NEVER the upstream API key.
+    """
+    return VoiceConfigResponse(
+        provider=settings.VOICE_PROVIDER,
+        default_language=settings.DEFAULT_VOICE_LANGUAGE,
+        stt_model=(
+            settings.OMNIROUTE_STT_MODEL
+            if settings.VOICE_PROVIDER == "omniroute"
+            else None
+        ),
+        tts_model=(
+            settings.OMNIROUTE_TTS_MODEL
+            if settings.VOICE_PROVIDER == "omniroute"
+            else None
+        ),
+        tts_voice=(
+            settings.OMNIROUTE_TTS_VOICE
+            if settings.VOICE_PROVIDER == "omniroute"
+            else None
+        ),
+        browser_fallback_supported=True,
+    )
+
+
+@app.post("/api/voice/transcribe", response_model=TranscribeResponse, tags=["voice"])
+async def transcribe(
+    file: UploadFile = File(...),
+    language: str = Form("hi-IN"),
+) -> TranscribeResponse:
+    """Receive recorded audio and return a transcript using OmniRoute.
+
+    The browser records audio, POSTs the audio file here, and the backend
+    forwards it to OmniRoute. If OmniRoute is unavailable, the response
+    status signals the client to fall back to browser STT.
+    """
+    if settings.VOICE_PROVIDER != "omniroute":
+        raise HTTPException(
+            status_code=503,
+            detail="OmniRoute STT is not enabled (VOICE_PROVIDER != omniroute).",
+        )
+    if not omniroute.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "OmniRoute is not configured on the backend. "
+                "Set OMNIROUTE_API_KEY in the backend environment."
+            ),
+        )
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty audio payload")
+
+    # ~10MB cap to match upload limit
+    if len(content) > settings.MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Audio too large. Max: {settings.MAX_UPLOAD_BYTES} bytes",
+        )
+
+    filename = file.filename or "recording.webm"
+    content_type = file.content_type or "audio/webm"
+
+    try:
+        result = await omniroute.transcribe_audio(
+            audio_bytes=content,
+            filename=filename,
+            content_type=content_type,
+            language=language,
+        )
+    except omniroute.OmniRouteError as e:
+        raise HTTPException(status_code=502, detail=f"STT upstream error: {e}") from e
+    except omniroute.OmniRouteUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+    return TranscribeResponse(
+        text=result["text"],
+        language=result["language"],
+        provider=result["provider"],
+        confidence=result.get("confidence"),
+    )
+
+
+@app.post("/api/voice/speak", tags=["voice"])
+async def speak(payload: SpeakRequest):
+    """Synthesize speech via OmniRoute and return the audio bytes.
+
+    Returns the raw audio body (e.g. audio/mpeg). The frontend plays it
+    directly with the HTMLAudioElement. If OmniRoute is unavailable, the
+    response status signals the client to fall back to browser TTS.
+    """
+    if settings.VOICE_PROVIDER != "omniroute":
+        raise HTTPException(
+            status_code=503,
+            detail="OmniRoute TTS is not enabled (VOICE_PROVIDER != omniroute).",
+        )
+    if not omniroute.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "OmniRoute is not configured on the backend. "
+                "Set OMNIROUTE_API_KEY in the backend environment."
+            ),
+        )
+
+    try:
+        audio = await omniroute.synthesize_speech(
+            text=payload.text,
+            language=payload.language,
+            voice=payload.voice,
+        )
+    except omniroute.OmniRouteError as e:
+        raise HTTPException(status_code=502, detail=f"TTS upstream error: {e}") from e
+    except omniroute.OmniRouteUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+    # Try to honor whatever content-type OmniRoute returned; fall back to MP3.
+    media_type = "audio/mpeg"
+    return Response(content=audio, media_type=media_type)
+
+
+# ---------------------------------------------------------------------------
 # Root endpoint
 # ---------------------------------------------------------------------------
 
@@ -490,6 +627,9 @@ async def root() -> dict:
             "outbreaks": "/api/outbreaks",
             "voice_prompt": "/api/voice/prompt/{key}?language=marathi",
             "voice_intent": "/api/voice/parse-intent",
+            "voice_config": "/api/voice/config",
+            "voice_transcribe": "/api/voice/transcribe (POST multipart with file)",
+            "voice_speak": "/api/voice/speak (POST JSON {text, language, voice})",
         },
     }
 

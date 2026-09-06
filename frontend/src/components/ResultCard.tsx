@@ -2,17 +2,14 @@
 // Hides technical details; clearly marks the result as a demo / rule-based prediction.
 
 import type { PredictionResult } from "../types"
+import type { VoiceLanguage } from "../services/voice"
+import { t } from "../i18n/strings"
 
 interface Props {
   prediction: PredictionResult
+  language: VoiceLanguage
   onSpeakAgain: () => void
   onDone: () => void
-}
-
-const SEVERITY_COPY: Record<string, string> = {
-  low: "Mild",
-  medium: "Moderate",
-  high: "Severe",
 }
 
 const SEVERITY_CLASS: Record<string, string> = {
@@ -21,11 +18,17 @@ const SEVERITY_CLASS: Record<string, string> = {
   high: "severity-high",
 }
 
-export function ResultCard({ prediction, onSpeakAgain, onDone }: Props) {
+const SEVERITY_TEXT: Record<VoiceLanguage, Record<string, string>> = {
+  "hi-IN": { low: "हल्का", medium: "मध्यम", high: "गंभीर" },
+  "mr-IN": { low: "हलका", medium: "मध्यम", high: "गंभीर" },
+  "en-IN": { low: "Mild", medium: "Moderate", high: "Severe" },
+}
+
+export function ResultCard({ prediction, language, onSpeakAgain, onDone }: Props) {
   const isDemo = prediction.is_demo
   const confidencePct = Math.round(prediction.confidence * 100)
   const severityClass = SEVERITY_CLASS[prediction.severity] || "severity-medium"
-  const severityLabel = SEVERITY_COPY[prediction.severity] || prediction.severity
+  const severityLabel = SEVERITY_TEXT[language]?.[prediction.severity] || prediction.severity
 
   return (
     <div className="card" role="region" aria-label="Diagnosis result">
@@ -39,11 +42,9 @@ export function ResultCard({ prediction, onSpeakAgain, onDone }: Props) {
       </h2>
 
       <div className="meta">
-        <span className={`tag ${severityClass}`}>
-          {severityLabel}
-        </span>
+        <span className={`tag ${severityClass}`}>{severityLabel}</span>
         {prediction.uncertainty_flag && (
-          <span className="tag uncertain">Not fully sure</span>
+          <span className="tag uncertain">{t("not_fully_sure", language)}</span>
         )}
         {isDemo && <span className="tag demo">DEMO</span>}
       </div>
@@ -51,14 +52,11 @@ export function ResultCard({ prediction, onSpeakAgain, onDone }: Props) {
       <p>{prediction.description}</p>
 
       {prediction.uncertainty_flag && (
-        <div className="warning-box">
-          We are not fully sure about this. Please call an expert if the
-          problem gets worse.
-        </div>
+        <div className="warning-box">{t("result_uncertain_warning", language)}</div>
       )}
 
       <h3 style={{ margin: "16px 0 8px", fontSize: 18, color: "#14532d" }}>
-        What to do
+        {language === "hi-IN" ? "क्या करना है" : language === "mr-IN" ? "काय करावे" : "What to do"}
       </h3>
       <p>{prediction.recommendation_text}</p>
 
@@ -76,21 +74,15 @@ export function ResultCard({ prediction, onSpeakAgain, onDone }: Props) {
 
       <div className="inline-actions">
         <button className="small-btn primary" onClick={onSpeakAgain} type="button">
-          🔊 Listen again
+          🔊 {language === "hi-IN" ? "फिर से सुनें" : language === "mr-IN" ? "पुन्हा ऐका" : "Listen again"}
         </button>
         <button className="small-btn" onClick={onDone} type="button">
-          ✓ Done
+          ✓ {language === "hi-IN" ? "ठीक है" : language === "mr-IN" ? "ठीक आहे" : "Done"}
         </button>
       </div>
 
-      <p
-        style={{
-          marginTop: 16,
-          fontSize: 12,
-          color: "#6b7280",
-        }}
-      >
-        Confidence: {confidencePct}% — for SIH demo using {prediction.model_source}
+      <p style={{ marginTop: 16, fontSize: 12, color: "#6b7280" }}>
+        {t("confidence_label", language)}: {confidencePct}% — SIH demo · {prediction.model_source}
       </p>
     </div>
   )

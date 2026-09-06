@@ -14,6 +14,7 @@ const STATUS_TEXT: Record<VoiceStatus, string> = {
   speaking: "Speaking...",
   listening: "Listening...",
   processing: "Thinking...",
+  error: "Error",
 }
 
 const STATUS_CLASS: Record<VoiceStatus, string> = {
@@ -21,6 +22,7 @@ const STATUS_CLASS: Record<VoiceStatus, string> = {
   speaking: "is-speaking",
   listening: "is-listening",
   processing: "is-speaking",
+  error: "is-speaking",
 }
 
 export function VoiceBanner({ status, interim, message }: Props) {

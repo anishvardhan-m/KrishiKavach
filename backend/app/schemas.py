@@ -209,3 +209,45 @@ class DiseaseReportResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ---------------------------------------------------------------------------
+# Voice provider schemas (OmniRoute + browser fallback)
+# ---------------------------------------------------------------------------
+
+class VoiceConfigResponse(BaseModel):
+    """Voice configuration exposed to the frontend.
+
+    The frontend uses this to know which provider to prefer, the default
+    language, and whether the browser fallback is supported. NEVER expose
+    the upstream API key here.
+    """
+    provider: str = Field(..., description="omniroute | browser")
+    default_language: str = Field(..., description="BCP-47 default language")
+    stt_model: Optional[str] = Field(None, description="Configured STT model name")
+    tts_model: Optional[str] = Field(None, description="Configured TTS model name")
+    tts_voice: Optional[str] = Field(None, description="Configured TTS voice id")
+    browser_fallback_supported: bool = Field(
+        True, description="Whether the browser has Web Speech API as a fallback"
+    )
+
+
+class TranscribeResponse(BaseModel):
+    """Response from POST /api/voice/transcribe."""
+    text: str = Field(..., description="Transcribed text")
+    language: str = Field(..., description="BCP-47 language of the audio")
+    provider: str = Field(..., description="omniroute | browser")
+    confidence: Optional[float] = Field(
+        None, description="Model confidence if available"
+    )
+
+
+class SpeakRequest(BaseModel):
+    """Request body for POST /api/voice/speak.
+
+    Returns synthesized audio as an octet-stream response, NOT a JSON body,
+    so this schema is informational only.
+    """
+    text: str = Field(..., max_length=4000, description="Text to synthesize")
+    language: str = Field("hi-IN", description="BCP-47 language code")
+    voice: Optional[str] = Field(None, description="Override TTS voice id")

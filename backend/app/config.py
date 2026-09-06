@@ -41,6 +41,30 @@ class Settings:
     # Voice / speech
     SPEECH_ENABLED: bool = os.getenv("SPEECH_ENABLED", "true").lower() == "true"
 
+    # Voice provider: "omniroute" (primary) or "browser" (fallback)
+    # When "omniroute", backend proxies STT/TTS to the configured OmniRoute-compatible endpoint.
+    # When "browser", the frontend uses Web Speech API directly.
+    VOICE_PROVIDER: str = os.getenv("VOICE_PROVIDER", "omniroute").lower()
+
+    # Default voice language (BCP-47). Frontend also reads this via /api/voice/config.
+    DEFAULT_VOICE_LANGUAGE: str = os.getenv("DEFAULT_VOICE_LANGUAGE", "hi-IN")
+
+    # OmniRoute-compatible endpoint configuration
+    OMNIROUTE_BASE_URL: str = os.getenv(
+        "OMNIROUTE_BASE_URL", "https://api.omniroute.online/v1"
+    )
+    OMNIROUTE_API_KEY: str = os.getenv("OMNIROUTE_API_KEY", "")
+    # STT (transcription) model name. Leave empty to use the gateway default.
+    OMNIROUTE_STT_MODEL: str = os.getenv("OMNIROUTE_STT_MODEL", "whisper-1")
+    # TTS (speech) model name.
+    OMNIROUTE_TTS_MODEL: str = os.getenv("OMNIROUTE_TTS_MODEL", "tts-1")
+    # TTS voice identifier (e.g. "alloy", "echo", "shimmer" or a provider-specific voice).
+    OMNIROUTE_TTS_VOICE: str = os.getenv("OMNIROUTE_TTS_VOICE", "alloy")
+    # Request timeout for upstream voice API calls (seconds).
+    OMNIROUTE_TIMEOUT_SECONDS: float = float(
+        os.getenv("OMNIROUTE_TIMEOUT_SECONDS", "20")
+    )
+
     # Demo time simulation
     DEMO_TIME_ENABLED: bool = os.getenv("DEMO_TIME_ENABLED", "true").lower() == "true"
 
