@@ -1,0 +1,84 @@
+{
+  "model_architecture": "MobileNetV2",
+  "pretrained_weights": "MobileNet_V2_Weights.DEFAULT",
+  "domain": "PlantVillage potato leaf images only",
+  "num_classes": 3,
+  "class_names": [
+    "Potato___Early_blight",
+    "Potato___Late_blight",
+    "Potato___healthy"
+  ],
+  "image_size": 224,
+  "normalization": {
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ]
+  },
+  "training": {
+    "epochs": 3,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "seed": 42,
+    "device": "mps",
+    "train_seconds": 116.51704812049866,
+    "class_balancing": "WeightedRandomSampler (inverse-frequency)"
+  },
+  "dataset": {
+    "total_images": 2152,
+    "train_images": 1722,
+    "val_images": 430
+  },
+  "metrics": {
+    "final_val_accuracy": 0.9976744186046511,
+    "final_val_correct": 429,
+    "final_val_total": 430,
+    "per_class_accuracy": {
+      "Potato___Early_blight": {
+        "correct": 199,
+        "total": 200,
+        "accuracy": 0.995
+      },
+      "Potato___Late_blight": {
+        "correct": 200,
+        "total": 200,
+        "accuracy": 1.0
+      },
+      "Potato___healthy": {
+        "correct": 30,
+        "total": 30,
+        "accuracy": 1.0
+      }
+    }
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 0.14955700268053843,
+      "val_accuracy": 0.9976744186046511
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.057398569329915425,
+      "val_accuracy": 0.9837209302325581
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.011808948541594437,
+      "val_accuracy": 0.9976744186046511
+    }
+  ],
+  "limitations": [
+    "Trained on PlantVillage lab/background-controlled images only. Real field photos may differ in lighting, angle, and background.",
+    "Covers 3 potato leaf classes \u2014 does NOT cover cotton, soybean, sugarcane, rice, wheat, or any other Maharashtra crop.",
+    "PlantVillage class names are preserved verbatim.",
+    "Class imbalance: Potato_healthy has 152 images vs 1000 each for disease classes. WeightedRandomSampler is used during training to compensate."
+  ]
+}

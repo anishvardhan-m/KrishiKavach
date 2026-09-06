@@ -530,17 +530,49 @@ class DemoPredictionService(PredictionService):
 
 
 # ---------------------------------------------------------------------------
-# Real Prediction Service — trained MobileNetV2 on PlantVillage Tomato subset
+# Per-crop model registry
 # ---------------------------------------------------------------------------
-# Per Correction #1 — this service honestly reports its domain:
-#   "MobileNetV2 — PlantVillage Tomato"
-# It MUST NOT be presented as covering other crops.
+# Each crop has its own MobileNetV2 TorchScript model artifact + class index.
+# The RealPredictionService router selects the right model based on context.crop_type.
 # ---------------------------------------------------------------------------
 
-# Map PlantVillage folder class names to human-readable labels used by the
-# existing PLANTVILLAGE_CATALOG. This is the ONLY mapping we perform — no
-# class names are relabelled or reinterpreted; they are simply renamed for UI.
+MODEL_REGISTRY: dict[str, dict] = {
+    "tomato": {
+        "model_file": "tomato_model.pt",
+        "class_index_file": "tomato_class_index.json",
+        "model_source_label": "MobileNetV2 — PlantVillage Tomato",
+    },
+    "pepper": {
+        "model_file": "pepper_model.pt",
+        "class_index_file": "pepper_class_index.json",
+        "model_source_label": "MobileNetV2 — PlantVillage Pepper",
+    },
+    "potato": {
+        "model_file": "potato_model.pt",
+        "class_index_file": "potato_class_index.json",
+        "model_source_label": "MobileNetV2 — PlantVillage Potato",
+    },
+}
+
+# Normalize crop_type aliases so multiple user inputs map to the same model.
+CROP_ALIASES: dict[str, str] = {
+    "tomato": "tomato",
+    "tomatoes": "tomato",
+    "pepper": "pepper",
+    "bell pepper": "pepper",
+    "bell pepper": "pepper",
+    "chilli": "pepper",
+    "mirchi": "pepper",
+    "potato": "potato",
+    "aloo": "potato",
+}
+
+
+# Map PlantVillage folder class names to human-readable display labels.
+# This is the ONLY mapping performed — no class names are relabelled or
+# reinterpreted; they are simply renamed for UI presentation.
 CLASS_DISPLAY: dict[str, dict[str, str]] = {
+    # ---- Tomato (10 classes) ----
     "Tomato_Bacterial_spot":                {"disease": "Tomato Bacterial Spot", "crop": "Tomato", "slug": "tomato-bacterial-spot"},
     "Tomato_Early_blight":                  {"disease": "Tomato Early Blight", "crop": "Tomato", "slug": "tomato-early-blight"},
     "Tomato_Late_blight":                   {"disease": "Tomato Late Blight", "crop": "Tomato", "slug": "tomato-late-blight"},
@@ -550,7 +582,14 @@ CLASS_DISPLAY: dict[str, dict[str, str]] = {
     "Tomato__Target_Spot":                  {"disease": "Tomato Target Spot", "crop": "Tomato", "slug": "tomato-target-spot"},
     "Tomato__Tomato_YellowLeaf__Curl_Virus": {"disease": "Tomato Yellow Leaf Curl Virus", "crop": "Tomato", "slug": "tomato-tylcv"},
     "Tomato__Tomato_mosaic_virus":          {"disease": "Tomato Mosaic Virus", "crop": "Tomato", "slug": "tomato-tobacco-mosaic-virus"},
-    "Tomato_healthy":                       {"disease": "Healthy", "crop": "Unknown", "slug": "healthy"},
+    "Tomato_healthy":                       {"disease": "Healthy", "crop": "Tomato", "slug": "healthy"},
+    # ---- Pepper (2 classes) ----
+    "Pepper__bell___Bacterial_spot":       {"disease": "Pepper Bacterial Spot", "crop": "Pepper", "slug": "pepper-bacterial-spot"},
+    "Pepper__bell___healthy":              {"disease": "Healthy", "crop": "Pepper", "slug": "pepper-healthy"},
+    # ---- Potato (3 classes) ----
+    "Potato___Early_blight":                {"disease": "Potato Early Blight", "crop": "Potato", "slug": "potato-early-blight"},
+    "Potato___Late_blight":                 {"disease": "Potato Late Blight", "crop": "Potato", "slug": "potato-late-blight"},
+    "Potato___healthy":                     {"disease": "Healthy", "crop": "Potato", "slug": "potato-healthy"},
 }
 
 
@@ -561,91 +600,96 @@ def _default_artifacts_dir() -> Path:
 
 
 class RealPredictionService(PredictionService):
-    """Production prediction service — MobileNetV2 trained on PlantVillage Tomato.
+    """Per-crop MobileNetV2 router — selects the correct model by crop_type.
 
-    Per Correction #1 — this service must NEVER be used to make claims about
-    crops outside its training domain. The model only recognises PlantVillage
-    tomato leaf classes; for cotton, soybean, sugarcane, rice, wheat, pigeon
-    pea, sorghum, or any other Maharashtra crop it returns an honest
-    unsupported-crop signal (or no confident prediction).
+    Per Correction #1 — this service honestly reports its domain via the
+    model_source field. It MUST NOT be presented as covering crops outside
+    the MODEL_REGISTRY.
+
+    Routing:
+        context.crop_type → MODEL_REGISTRY key → model artifact + class index
+
+    Unsupported crops (not in MODEL_REGISTRY) receive an honest
+    unsupported-crop signal that escalates to a human expert.
     """
 
     IMAGE_SIZE = 224
     NORMALIZE_MEAN = (0.485, 0.456, 0.406)
     NORMALIZE_STD = (0.229, 0.224, 0.225)
 
-    # Crops the model knows nothing about. If context.crop_type names one of
-    # these, we refuse to return a tomato-disease label.
-    UNSUPPORTED_CROPS: set[str] = {
-        "cotton", "soybean", "soya", "sugarcane", "rice", "paddy",
-        "wheat", "pigeon pea", "tur", "arhar", "sorghum", "jowar",
-        "bajra", "maize", "corn", "onion", "grape", "apple", "cherry",
-        "peach", "blueberry", "raspberry", "strawberry", "squash",
-        "bell pepper", "pepper", "potato",
-    }
-
     def __init__(
         self,
-        model_path: str | os.PathLike[str] | None = None,
-        class_index_path: str | os.PathLike[str] | None = None,
+        artifacts_dir: str | os.PathLike[str] | None = None,
     ):
-        artifacts_dir = _default_artifacts_dir()
-        self._model_path = Path(model_path) if model_path else artifacts_dir / "tomato_model.pt"
-        self._class_index_path = Path(class_index_path) if class_index_path else artifacts_dir / "tomato_class_index.json"
-        self._model = None
-        self._class_names: list[str] = []
-        self._load_error: str | None = None
-        self._load()
+        self._artifacts_dir = (
+            Path(artifacts_dir) if artifacts_dir
+            else _default_artifacts_dir()
+        )
+        self._models: dict[str, Any] = {}  # crop -> loaded TorchScript model
+        self._class_names: dict[str, list[str]] = {}  # crop -> class list
+        self._load_errors: dict[str, str] = {}  # crop -> error message
+        self._load_all()
 
     @property
     def name(self) -> str:
-        return "RealPredictionService (MobileNetV2 — PlantVillage Tomato)"
+        crops = list(self._models.keys())
+        return (
+            f"RealPredictionService (MobileNetV2 — "
+            f"{', '.join(crops) if crops else 'no models loaded'})"
+        )
 
     @property
     def is_demo(self) -> bool:
         return False
 
     @property
-    def model_source(self) -> str:
-        return "MobileNetV2 — PlantVillage Tomato"
-
-    @property
     def is_ready(self) -> bool:
-        return self._model is not None and not self._load_error
+        return len(self._models) > 0 and not self._load_errors
 
-    def _load(self) -> None:
+    def _load_all(self) -> None:
         try:
             import torch
-            from PIL import Image
         except ImportError as exc:
-            self._load_error = (
-                f"ML dependencies not installed ({exc}). "
+            self._load_errors["_init"] = (
+                f"torch not installed ({exc}). "
                 "Install torch + torchvision into the backend venv."
             )
             return
 
-        if not self._model_path.is_file():
-            self._load_error = (
-                f"Model artifact not found at {self._model_path}. "
-                "Run backend/ml/train_tomato.py to produce it."
+        for crop, info in MODEL_REGISTRY.items():
+            self._load_crop(crop, info)
+
+    def _load_crop(self, crop: str, info: dict) -> None:
+        model_path = self._artifacts_dir / info["model_file"]
+        class_path = self._artifacts_dir / info["class_index_file"]
+
+        if not model_path.is_file():
+            self._load_errors[crop] = (
+                f"Model not found: {model_path}. "
+                f"Run ml/train_{crop}.py to produce it."
             )
             return
-        if not self._class_index_path.is_file():
-            self._load_error = (
-                f"Class index not found at {self._class_index_path}."
-            )
+        if not class_path.is_file():
+            self._load_errors[crop] = f"Class index not found: {class_path}."
             return
 
         try:
-            with self._class_index_path.open() as f:
-                self._class_names = json.load(f)
-            self._model = torch.jit.load(
-                str(self._model_path), map_location="cpu",
-            )
-            self._model.eval()
+            import torch
+            with class_path.open() as f:
+                self._class_names[crop] = json.load(f)
+            model = torch.jit.load(str(model_path), map_location="cpu")
+            model.eval()
+            self._models[crop] = model
         except Exception as exc:
-            self._load_error = f"Failed to load model: {exc}"
-            self._model = None
+            self._load_errors[crop] = f"Failed to load {crop} model: {exc}"
+
+    def _resolve_crop(self, context: dict) -> str | None:
+        raw = (context.get("crop_type") or "").strip().lower()
+        if not raw:
+            # No crop specified — try all available models and use the one
+            # that returns the most confident prediction (last-resort fallback).
+            return None
+        return CROP_ALIASES.get(raw)
 
     def _preprocess(self, image_bytes: bytes):
         """Load + preprocess image bytes to a (1, 3, 224, 224) tensor."""
@@ -660,91 +704,75 @@ class RealPredictionService(PredictionService):
             transforms.ToTensor(),
             transforms.Normalize(self.NORMALIZE_MEAN, self.NORMALIZE_STD),
         ])
-        tensor = tf(img).unsqueeze(0)
-        return tensor
+        return tf(img).unsqueeze(0)
 
-    def _infer(self, image_bytes: bytes) -> tuple[int, float, list[float]]:
-        """Run model inference. Returns (top_index, top_conf, all_probs)."""
+    def _infer(self, crop: str, image_bytes: bytes) -> tuple[int, float, list[float]]:
+        """Run inference on a specific crop model."""
         import torch
-        if not self.is_ready:
-            raise RuntimeError(
-                f"RealPredictionService is not ready: {self._load_error}"
-            )
+        if crop not in self._models:
+            raise KeyError(f"No model loaded for crop: {crop}")
+        model = self._models[crop]
         x = self._preprocess(image_bytes)
         with torch.no_grad():
-            logits = self._model(x)
+            logits = model(x)
         probs = torch.softmax(logits, dim=1)[0].tolist()
         top_idx = int(max(range(len(probs)), key=lambda i: probs[i]))
         return top_idx, float(probs[top_idx]), [float(p) for p in probs]
 
-    def _is_unsupported_crop(self, context: dict) -> str | None:
-        crop_type = (context.get("crop_type") or "").strip().lower()
-        if crop_type and crop_type in self.UNSUPPORTED_CROPS:
-            return crop_type
-        return None
-
     def _unsupported_prediction(
         self, crop_type: str,
     ) -> DiseasePrediction:
-        """Build a prediction that honestly says the model can't classify this."""
         return DiseasePrediction(
-            disease="Unsupported crop (outside PlantVillage Tomato domain)",
-            crop=crop_type.title(),
+            disease="Unsupported crop (not in trained model registry)",
+            crop=crop_type.title() if crop_type else "Unknown",
             confidence=0.0,
             severity=Severity.LOW,
             uncertainty_flag=True,
             description=(
-                f"This model only recognises PlantVillage tomato leaf classes. "
-                f"It has NOT been trained on '{crop_type}', and its predictions "
-                f"for that crop would be unreliable. Please consult a local "
-                f"agriculture extension officer for this crop."
+                f"This system has trained models for: "
+                f"{', '.join(sorted(self._models.keys()))}. "
+                f"It has NOT been trained on '{crop_type or 'this crop'}', "
+                f"and its predictions for that crop would be unreliable. "
+                f"Please consult your local agriculture extension officer."
             ),
             disease_slug="unsupported-crop",
             is_demo=False,
-            model_source=self.model_source,
+            model_source="RealPredictionService (no matching crop model)",
             alternatives=[],
         )
 
-    async def predict(
-        self, image_bytes: bytes, context: dict[str, Any],
+    def _build_prediction(
+        self,
+        crop: str,
+        top_idx: int,
+        top_conf: float,
+        all_probs: list[float],
     ) -> DiseasePrediction:
-        if not self.is_ready:
-            raise RuntimeError(
-                f"RealPredictionService not available: {self._load_error}"
-            )
-
-        # Domain safety: refuse to fabricate predictions for unsupported crops.
-        unsupported = self._is_unsupported_crop(context)
-        if unsupported:
-            return self._unsupported_prediction(unsupported)
-
-        top_idx, top_conf, all_probs = self._infer(image_bytes)
-
-        # Rank all classes for alternatives.
+        """Build a DiseasePrediction from inference results."""
         ranked = sorted(
             enumerate(all_probs), key=lambda kv: kv[1], reverse=True,
         )
+        class_names = self._class_names[crop]
+        primary_class = class_names[top_idx]
+        registry_entry = MODEL_REGISTRY[crop]
+        model_source = registry_entry["model_source_label"]
 
-        primary_class = self._class_names[top_idx]
         display = CLASS_DISPLAY.get(primary_class)
         if display is None:
-            # Defensive fallback — if a new class name appears in the model
-            # index that we don't have a display label for, surface the raw
-            # name rather than guessing.
-            disease_name = primary_class.replace("Tomato_", "Tomato ").replace("_", " ")
-            crop_name = "Tomato"
+            disease_name = primary_class.replace("_", " ").replace("  ", " ")
+            crop_name = crop.title()
             slug = self._slugify(primary_class)
         else:
             disease_name = display["disease"]
             crop_name = display["crop"]
             slug = display["slug"]
 
-        # Severity + uncertainty from confidence.
         severity, uncertainty = self.estimate_severity(top_conf, disease_name)
 
-        # Catalog description if available.
+        # Look up description from PlantVillage catalog.
         catalog_entry = next(
-            (e for e in PLANTVILLAGE_CATALOG if e["disease"] == disease_name),
+            (e for e in PLANTVILLAGE_CATALOG
+             if e["disease"].lower() == disease_name.lower()),
             None,
         )
         description = (
@@ -752,14 +780,13 @@ class RealPredictionService(PredictionService):
             else f"Detected {disease_name} on {crop_name} (PlantVillage class)."
         )
 
-        # Alternatives: top-K (excluding the top-1 itself).
         alternatives: list[dict] = []
         for idx, prob in ranked[1:4]:
-            cls = self._class_names[idx]
+            cls = class_names[idx]
             d = CLASS_DISPLAY.get(cls)
             alternatives.append({
                 "disease": (d["disease"] if d else cls),
-                "crop": (d["crop"] if d else "Tomato"),
+                "crop": (d["crop"] if d else crop_name.title()),
                 "confidence": round(prob, 4),
             })
 
@@ -772,15 +799,49 @@ class RealPredictionService(PredictionService):
             description=description,
             disease_slug=slug,
             is_demo=False,
-            model_source=self.model_source,
+            model_source=model_source,
             alternatives=alternatives,
         )
+
+    async def predict(
+        self, image_bytes: bytes, context: dict[str, Any],
+    ) -> DiseasePrediction:
+        if not self.is_ready:
+            raise RuntimeError(
+                f"RealPredictionService not available: {self._load_errors}"
+            )
+
+        crop = self._resolve_crop(context)
+
+        if crop is None or crop not in self._models:
+            # Crop not specified or not in our registry.
+            # Check if it's in the alias map but missing the model.
+            raw = (context.get("crop_type") or "").strip().lower()
+            if raw and CROP_ALIASES.get(raw) not in self._models:
+                return self._unsupported_prediction(raw)
+            # No crop specified — try all models, pick best confident result.
+            best_pred: DiseasePrediction | None = None
+            best_conf = -1.0
+            for try_crop in self._models:
+                try:
+                    top_idx, top_conf, all_probs = self._infer(try_crop, image_bytes)
+                    pred = self._build_prediction(try_crop, top_idx, top_conf, all_probs)
+                    if top_conf > best_conf:
+                        best_conf = top_conf
+                        best_pred = pred
+                except Exception:
+                    continue
+            if best_pred is not None:
+                return best_pred
+            return self._unsupported_prediction(raw or "unknown crop")
+
+        # Crop is specified and we have a model for it.
+        top_idx, top_conf, all_probs = self._infer(crop, image_bytes)
+        return self._build_prediction(crop, top_idx, top_conf, all_probs)
 
     async def recommend(
         self, prediction: DiseasePrediction, context: dict,
     ) -> Recommendation:
-        # If we refused to predict (unsupported crop), don't fabricate a
-        # recommendation — direct the user to a human expert.
         if prediction.disease_slug == "unsupported-crop":
             return Recommendation(
                 disease=prediction.disease,
@@ -794,9 +855,7 @@ class RealPredictionService(PredictionService):
                     "Note the district, crop variety, and recent weather.",
                     "Visit the nearest KVK or call the Maharashtra agri helpline.",
                 ],
-                warning=(
-                    "Do not apply pesticides based on unverified AI guesses."
-                ),
+                warning="Do not apply pesticides based on unverified AI guesses.",
                 escalate=True,
                 follow_up_days=1,
                 context=(
@@ -805,11 +864,10 @@ class RealPredictionService(PredictionService):
                 ),
             )
 
-        # Match against the existing PlantVillage catalog so treatment
-        # recommendations remain consistent with the demo service.
         entry = next(
-            (e for e in PLANTVILLAGE_CATALOG if e["disease"] == prediction.disease),
-            PLANTVILLAGE_CATALOG[-1],  # Healthy fallback
+            (e for e in PLANTVILLAGE_CATALOG
+             if e["disease"].lower() == prediction.disease.lower()),
+            PLANTVILLAGE_CATALOG[-1],
         )
         context_lines: list[str] = []
         if district := context.get("district"):
@@ -833,7 +891,8 @@ class RealPredictionService(PredictionService):
     ) -> tuple[Severity, bool]:
         if confidence >= CONFIDENCE_CERTAIN:
             entry = next(
-                (e for e in PLANTVILLAGE_CATALOG if e["disease"] == disease),
+                (e for e in PLANTVILLAGE_CATALOG
+                 if e["disease"].lower() == disease.lower()),
                 None,
             )
             severity_hint = entry["severity_hint"] if entry else "medium"
@@ -853,14 +912,15 @@ def get_prediction_service(mode: str = "demo") -> PredictionService:
     Args:
         mode: "demo" (default) or "real".
               Set PREDICTION_MODE env var or call with mode="real"
-              to use the trained MobileNetV2 model.
+              to use the trained per-crop MobileNetV2 models.
     """
     if mode == "real":
         service = RealPredictionService()
         if not service.is_ready:
             raise RuntimeError(
-                f"RealPredictionService is not ready: {service._load_error}. "
-                "Either run ml/train_tomato.py or fall back to demo mode."
+                f"RealPredictionService is not ready: {service._load_errors}. "
+                "Run ml/train_tomato.py / train_pepper.py / train_potato.py "
+                "or fall back to demo mode."
             )
         return service
     return DemoPredictionService()

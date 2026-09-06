@@ -1,0 +1,76 @@
+{
+  "model_architecture": "MobileNetV2",
+  "pretrained_weights": "MobileNet_V2_Weights.DEFAULT",
+  "domain": "PlantVillage bell pepper leaf images only",
+  "num_classes": 2,
+  "class_names": [
+    "Pepper__bell___Bacterial_spot",
+    "Pepper__bell___healthy"
+  ],
+  "image_size": 224,
+  "normalization": {
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ]
+  },
+  "training": {
+    "epochs": 3,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "seed": 42,
+    "device": "mps",
+    "train_seconds": 126.29798293113708
+  },
+  "dataset": {
+    "total_images": 2475,
+    "train_images": 1980,
+    "val_images": 495
+  },
+  "metrics": {
+    "final_val_accuracy": 0.9959595959595959,
+    "final_val_correct": 493,
+    "final_val_total": 495,
+    "per_class_accuracy": {
+      "Pepper__bell___Bacterial_spot": {
+        "correct": 198,
+        "total": 199,
+        "accuracy": 0.9949748743718593
+      },
+      "Pepper__bell___healthy": {
+        "correct": 295,
+        "total": 296,
+        "accuracy": 0.9966216216216216
+      }
+    }
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 0.07878844138573517,
+      "val_accuracy": 0.9959595959595959
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.02622141003458187,
+      "val_accuracy": 0.9737373737373738
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.018248102876576452,
+      "val_accuracy": 0.9959595959595959
+    }
+  ],
+  "limitations": [
+    "Trained on PlantVillage lab/background-controlled images only. Real field photos may differ in lighting, angle, and background.",
+    "Covers 2 pepper leaf classes \u2014 does NOT cover cotton, soybean, sugarcane, rice, wheat, or any other Maharashtra crop.",
+    "PlantVillage class names are preserved verbatim."
+  ]
+}
