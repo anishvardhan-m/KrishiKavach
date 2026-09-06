@@ -6,6 +6,9 @@ venv/
 dist/
 *.min.js
 
+# TypeScript incremental build cache
+*.tsbuildinfo
+
 # Python
 __pycache__/
 *.pyc
@@ -20,11 +23,31 @@ __pycache__/
 *.sqlite
 *.sqlite3
 
-# Uploads
-/uploads/
+# Uploads (runtime-generated)
+backend/uploads/
+!backend/uploads/.gitkeep
 
-# npm, yarn, pnpm lock files
-# go.sum
-yarn.lock
-package-lock.json
-pnpm-lock.yaml
+# Static thumbnails (runtime-generated)
+static/thumbs/
+
+# Dataset image directories (too large for git; documented in DATASET_REGISTRY.md)
+PlantVillage/
+"Plants Diseases Detection and Classification.v12i.multiclass/"
+"Individual Weed_Species/"
+UAV/
+
+# npm lock files (keep package-lock.json for reproducible installs)
+# yarn.lock
+# pnpm-lock.yaml
+
+# macOS
+.DS_Store
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
