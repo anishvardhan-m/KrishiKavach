@@ -552,6 +552,11 @@ MODEL_REGISTRY: dict[str, dict] = {
         "class_index_file": "potato_class_index.json",
         "model_source_label": "MobileNetV2 — PlantVillage Potato",
     },
+    "sugarcane": {
+        "model_file": "sugarcane_model.pt",
+        "class_index_file": "sugarcane_class_index.json",
+        "model_source_label": "MobileNetV2 — Sugarcane Leaf Disease Dataset",
+    },
 }
 
 # Normalize crop_type aliases so multiple user inputs map to the same model.
@@ -565,6 +570,8 @@ CROP_ALIASES: dict[str, str] = {
     "mirchi": "pepper",
     "potato": "potato",
     "aloo": "potato",
+    "sugarcane": "sugarcane",
+    "ganna": "sugarcane",
 }
 
 
@@ -590,6 +597,12 @@ CLASS_DISPLAY: dict[str, dict[str, str]] = {
     "Potato___Early_blight":                {"disease": "Potato Early Blight", "crop": "Potato", "slug": "potato-early-blight"},
     "Potato___Late_blight":                 {"disease": "Potato Late Blight", "crop": "Potato", "slug": "potato-late-blight"},
     "Potato___healthy":                     {"disease": "Healthy", "crop": "Potato", "slug": "potato-healthy"},
+    # ---- Sugarcane (5 classes) ----
+    "Healthy":                             {"disease": "Healthy", "crop": "Sugarcane", "slug": "sugarcane-healthy"},
+    "Mosaic":                              {"disease": "Sugarcane Mosaic", "crop": "Sugarcane", "slug": "sugarcane-mosaic"},
+    "RedRot":                              {"disease": "Sugarcane Red Rot", "crop": "Sugarcane", "slug": "sugarcane-redrot"},
+    "Rust":                                {"disease": "Sugarcane Rust", "crop": "Sugarcane", "slug": "sugarcane-rust"},
+    "Yellow":                              {"disease": "Sugarcane Yellow Leaf Disease", "crop": "Sugarcane", "slug": "sugarcane-yellow"},
 }
 
 

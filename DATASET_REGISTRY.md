@@ -29,12 +29,31 @@
 - **Classes**: Multi-class classification (specific classes not enumerated in flat structure)
 - **Note**: Cannot determine specific crop/disease labels without inspecting individual filenames or metadata
 
-### 3. Weed Species Dataset
+### 3. Sugarcane Leaf Disease Dataset
+- **Location (recovered)**: `/SugarcaneLeafDiseaseDataset_recovered/Sugarcane Leaf Disease Dataset/`
+- **Archive**: `Sugarcane Leaf Disease Dataset.rar` (167 MB RAR5)
+- **Format**: Organized in subfolders by class name
+- **Classes** (verified counts from archive — all 2,521 images readable in the recovered extraction):
+  - Healthy: 522
+  - Mosaic: 462
+  - RedRot: 518
+  - Rust: 514
+  - Yellow: 505
+- **Total archive**: 2,521 images
+- **Model**: Trained model at `backend/ml/artifacts/sugarcane_model.pt`
+- **Notes**:
+  - The RAR archive is intact (all 2,521 entries have non-zero `Size`).
+  - The previously-checked-in `SugarcaneLeafDiseaseDataset/` extraction is NOT
+    used for training — a failed extraction left 2,129 zero-byte files. Use
+    `SugarcaneLeafDiseaseDataset_recovered/` instead.
+  - See `backend/ml/SUGARCANE_DATASET_NOTES.md` for full per-class metrics.
+
+### 4. Weed Species Dataset
 - **Location**: `/Individual Weed_Species/`
 - **Format**: 16 weed species folders
 - **Purpose**: Weed identification (not crop disease)
 
-### 4. UAV/Dataset
+### 5. UAV/Dataset
 - **Location**: `/UAV/`
 - **Format**: Aerial imagery (likely for field-level analysis)
 - **Purpose**: Crop health monitoring from altitude
@@ -62,10 +81,26 @@ Given the available datasets:
 
 **Approach for Foundation**:
 - Use PlantVillage dataset for tomato/pepper/potato disease detection as-is
+- Use Sugarcane Leaf Disease Dataset for sugarcane disease detection (with known limitations)
 - Clearly label predictions with actual plant/disease from model
 - For demo purposes, we can show how the system would work with Maharashtra crops
 - But NEVER claim a tomato disease model detects cotton diseases
 - Architecture must be ready to swap in Maharashtra-specific models when available
+
+## Trained Models Summary
+
+| Crop | Dataset | Classes | Valid Images | Val Accuracy |
+|---|---|---|---|---|
+| Tomato | PlantVillage | 11 | 16,011 | 97.63% |
+| Pepper | PlantVillage | 2 | 2,475 | 99.60% |
+| Potato | PlantVillage | 3 | 2,152 | 99.77% |
+| Sugarcane | Sugarcane Leaf Disease | 5 | 2,521 | 91.47% |
+
+**Note**: Sugarcane validation accuracy (91.47%, best epoch 2) is NOT representative
+of Maharashtra field performance. Field photos will differ in lighting, angle,
+background, and disease stage. Known confusion: Healthy ↔ Mosaic (~22% of
+validation Healthy images are predicted as Mosaic). See
+`backend/ml/SUGARCANE_DATASET_NOTES.md` for per-class precision/recall/F1.
 
 ## Recommended Initial Model Scope
 For the foundation vertical slice, we will:

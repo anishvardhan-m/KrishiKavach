@@ -1,0 +1,129 @@
+{
+  "model_architecture": "MobileNetV2",
+  "pretrained_weights": "MobileNet_V2_Weights.DEFAULT",
+  "domain": "Sugarcane Leaf Disease Dataset \u2014 field leaf images",
+  "num_classes": 5,
+  "class_names": [
+    "Healthy",
+    "Mosaic",
+    "RedRot",
+    "Rust",
+    "Yellow"
+  ],
+  "image_size": 224,
+  "normalization": {
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ]
+  },
+  "training": {
+    "epochs": 3,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "seed": 42,
+    "device": "mps",
+    "train_seconds": 121.24532079696655
+  },
+  "dataset": {
+    "archive_raw_total": 2521,
+    "total_valid_images": 2521,
+    "corrupt_images_skipped": 0,
+    "train_images": 2017,
+    "val_images": 504,
+    "valid_images_by_class": {
+      "Healthy": 522,
+      "Mosaic": 462,
+      "RedRot": 518,
+      "Rust": 514,
+      "Yellow": 505
+    },
+    "train_distribution": {
+      "Rust": 411,
+      "Yellow": 404,
+      "Mosaic": 370,
+      "Healthy": 418,
+      "RedRot": 414
+    },
+    "val_distribution": {
+      "Yellow": 101,
+      "Rust": 103,
+      "Mosaic": 92,
+      "RedRot": 104,
+      "Healthy": 104
+    }
+  },
+  "metrics": {
+    "final_val_accuracy": 0.9146825396825397,
+    "final_val_correct": 461,
+    "final_val_total": 504,
+    "per_class_accuracy": {
+      "Healthy": {
+        "correct": 81,
+        "total": 104,
+        "recall": 0.7788461538461539,
+        "precision": 0.9878048780487805,
+        "f1": 0.870967741935484
+      },
+      "Mosaic": {
+        "correct": 92,
+        "total": 92,
+        "recall": 1.0,
+        "precision": 0.7603305785123967,
+        "f1": 0.8638497652582159
+      },
+      "RedRot": {
+        "correct": 101,
+        "total": 104,
+        "recall": 0.9711538461538461,
+        "precision": 0.9351851851851852,
+        "f1": 0.9528301886792453
+      },
+      "Rust": {
+        "correct": 91,
+        "total": 103,
+        "recall": 0.883495145631068,
+        "precision": 1.0,
+        "f1": 0.9381443298969072
+      },
+      "Yellow": {
+        "correct": 96,
+        "total": 101,
+        "recall": 0.9504950495049505,
+        "precision": 0.9411764705882353,
+        "f1": 0.9458128078817734
+      }
+    }
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 0.5245517644778183,
+      "val_accuracy": 0.8888888888888888
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.24094947795792268,
+      "val_accuracy": 0.9146825396825397
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.18710892160280423,
+      "val_accuracy": 0.8928571428571429
+    }
+  ],
+  "limitations": [
+    "Validation accuracy on this dataset does NOT establish performance on real Maharashtra field conditions. Field photos may differ in lighting, angle, background, and disease stage.",
+    "All 2521 of 2521 archived images were readable \u2014 0 corrupt images were skipped during training.",
+    "Class distribution (train/val split): {'Healthy': 522, 'Mosaic': 462, 'RedRot': 518, 'Rust': 514, 'Yellow': 505}.",
+    "Covers 5 Sugarcane leaf classes only \u2014 does NOT cover other crops (cotton, soybean, rice, wheat, pigeon pea, tomato, pepper, potato, or any other Maharashtra crop).",
+    "Class names are verbatim from the dataset folder names."
+  ]
+}

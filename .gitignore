@@ -37,6 +37,11 @@ PlantVillage/
 "Individual Weed_Species/"
 UAV/
 
+# Sugarcane Leaf Disease Dataset (verified: 2,521 images, 5 classes)
+"Sugarcane Leaf Disease Dataset.rar"
+SugarcaneLeafDiseaseDataset/
+SugarcaneLeafDiseaseDataset_recovered/
+
 # Trained model artifacts (regenerate via ml/train_tomato.py)
 backend/ml/artifacts/*.pt
 backend/ml/artifacts/*.pth
