@@ -23,10 +23,15 @@ import type { RecorderError } from "../hooks/useAudioRecorder"
 
 export interface VoiceConfig {
   provider: string
+  stt_provider: string
+  tts_provider: string
   default_language: string
   stt_model: string | null
   tts_model: string | null
   tts_voice: string | null
+  elevenlabs_stt_model: string | null
+  elevenlabs_voice_id: string | null
+  elevenlabs_model_id: string | null
   browser_fallback_supported: boolean
 }
 
@@ -103,6 +108,22 @@ export class OmniRouteUnavailable extends Error {
 
 export function isOmniRouteUnavailable(e: unknown): boolean {
   return e instanceof OmniRouteUnavailable
+}
+
+/**
+ * Thrown when browser autoplay policy blocks audio (e.g. user hasn't tapped
+ * yet). Distinct from "service is unavailable" so the UI can prompt the user
+ * to retry on first interaction rather than falling back silently.
+ */
+export class AutoplayBlocked extends Error {
+  constructor() {
+    super("Browser autoplay blocked the audio playback")
+    this.name = "AutoplayBlocked"
+  }
+}
+
+export function isAutoplayBlocked(e: unknown): boolean {
+  return e instanceof AutoplayBlocked
 }
 
 // ---------------------------------------------------------------------------

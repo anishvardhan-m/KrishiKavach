@@ -47,6 +47,36 @@ type StringKey =
   | "voice_unavailable_explainer"
   | "language_label"
   | "kb_voice_provider"
+  | "risk_your_area"
+  | "risk_low"
+  | "risk_medium"
+  | "risk_high"
+  | "risk_critical"
+  | "risk_expert_help"
+  | "risk_expert_help_sub"
+  | "risk_act_now"
+  | "action_check_crop"
+  | "action_check_crop_sub"
+  | "follow_up_title"
+  | "follow_up_loading"
+  | "follow_up_none"
+  | "follow_up_none_body"
+  | "follow_up_select"
+  | "follow_up_case_label"
+  | "follow_up_case_improved"
+  | "follow_up_case_not_improved"
+  | "follow_up_case_expert"
+  | "follow_up_notes_placeholder"
+  | "follow_up_submit"
+  | "follow_up_success_improved"
+  | "follow_up_success_not_improved"
+  | "follow_up_success_expert"
+  | "follow_up_error"
+  | "follow_up_confirm_title"
+  | "follow_up_confirm_body"
+  | "follow_up_back"
+  | "welcome_voice_intro"
+  | "welcome_autoplay_prompt"
 
 const STRINGS: Record<VoiceLanguage, Partial<Record<StringKey, string>>> = {
   "hi-IN": {
@@ -99,6 +129,37 @@ const STRINGS: Record<VoiceLanguage, Partial<Record<StringKey, string>>> = {
       "माइक्रोफ़ोन या ब्राउज़र आवाज़ उपलब्ध नहीं है। कृपया बटन से आगे बढ़ें।",
     language_label: "भाषा",
     kb_voice_provider: "OmniRoute",
+    risk_your_area: "⚠️ आपके क्षेत्र में जोखिम",
+    risk_low: "कम जोखिम",
+    risk_medium: "मध्यम जोखिम",
+    risk_high: "उच्च जोखिम",
+    risk_critical: "गंभीर",
+    risk_expert_help: "🆘 विशेषज्ञ से संपर्क करें",
+    risk_expert_help_sub: "1800-103-AGRI पर कॉल करें",
+    risk_act_now: "अभी करें:",
+    action_check_crop: "फसल कैसी है?",
+    action_check_crop_sub: "सिफ़ारिश के बाद का हाल बताएँ",
+    follow_up_title: "फसल का हाल बताएँ",
+    follow_up_loading: "रिकॉर्ड देखे जा रहे हैं...",
+    follow_up_none: "अभी कुछ नहीं है।",
+    follow_up_none_body: "इस समय कोई सिफ़ारिश फॉलो-अप के लिए बाकी नहीं है।",
+    follow_up_select: "यह सिफ़ारिश आपकी कौन सी है?",
+    follow_up_case_label: "केस",
+    follow_up_case_improved: "फसल सुधर गई ✓",
+    follow_up_case_not_improved: "फसल नहीं सुधरी",
+    follow_up_case_expert: "मुझे विशेषज्ञ चाहिए 🆘",
+    follow_up_notes_placeholder: "कुछ और बताना हो तो लिखें (वैकल्पिक)",
+    follow_up_submit: "हाल भेजें",
+    follow_up_success_improved: "बहुत अच्छा! यह दर्ज हो गया।",
+    follow_up_success_not_improved: "ठीक है। हम एक हफ़्ते बाद फिर पूछेंगे।",
+    follow_up_success_expert: "ठीक है। हम विशेषज्ञ को बुला रहे हैं।",
+    follow_up_error: "माफ़ कीजिए, हाल दर्ज नहीं हो सका।",
+    follow_up_confirm_title: "क्या आपने सलाह आज़माई?",
+    follow_up_confirm_body: "क्या आपने वह सिफ़ारिश आज़माई जो हमने पिछली बार दी थी?",
+    follow_up_back: "वापस जाएँ",
+    welcome_voice_intro:
+      "नमस्ते! मैं कृषिकवच हूँ। आपकी फसल की सेहत जांचने में मैं आपकी मदद करूंगा। हरे बटन से अपनी फसल की फोटो लें। नीले बटन से पूछें कि आपको क्या करना चाहिए। नारंगी बटन से अपने आसपास की बीमारी का खतरा देखें। लाल बटन से कृषि विशेषज्ञ की मदद लें। और बैंगनी बटन दबाकर जानकारी दोबारा सुन सकते हैं।",
+    welcome_autoplay_prompt: "🔊 आवाज़ सुनने के लिए यहाँ दबाएँ",
   },
   "en-IN": {
     app_title: "KrishiKavach",
@@ -153,6 +214,37 @@ const STRINGS: Record<VoiceLanguage, Partial<Record<StringKey, string>>> = {
       "Microphone or browser voice is not available. Please continue using the buttons.",
     language_label: "Language",
     kb_voice_provider: "OmniRoute",
+    risk_your_area: "⚠️ Risk in your area",
+    risk_low: "Low risk",
+    risk_medium: "Moderate risk",
+    risk_high: "High risk",
+    risk_critical: "Critical",
+    risk_expert_help: "🆘 Call an expert",
+    risk_expert_help_sub: "Call 1800-103-AGRI",
+    risk_act_now: "Do this now:",
+    action_check_crop: "How is my crop?",
+    action_check_crop_sub: "Report the result of the advice",
+    follow_up_title: "Crop Follow-up",
+    follow_up_loading: "Checking your records...",
+    follow_up_none: "Nothing due right now.",
+    follow_up_none_body: "No follow-ups are due at this time.",
+    follow_up_select: "Which recommendation is this about?",
+    follow_up_case_label: "Case",
+    follow_up_case_improved: "Crop improved ✓",
+    follow_up_case_not_improved: "Crop did not improve",
+    follow_up_case_expert: "I need an expert 🆘",
+    follow_up_notes_placeholder: "Anything else to add? (optional)",
+    follow_up_submit: "Send update",
+    follow_up_success_improved: "Great! Your update has been recorded.",
+    follow_up_success_not_improved: "Noted. We will check again in a week.",
+    follow_up_success_expert: "Understood. An expert will be notified.",
+    follow_up_error: "Sorry, we could not save your update.",
+    follow_up_confirm_title: "Did you try the advice?",
+    follow_up_confirm_body: "Did you try what we recommended last time?",
+    follow_up_back: "Go back",
+    welcome_voice_intro:
+      "Welcome to KrishiKavach. I will help you check the health of your crop. Tap the green button to take a photo of your crop. Tap the blue button to ask what you should do. Tap the orange button to see the disease risk around you. Tap the red button to get help from an agriculture expert. Tap the purple button to hear this information again.",
+    welcome_autoplay_prompt: "🔊 Tap here to hear the message",
   },
   "mr-IN": {
     app_title: "कृषिकवच",
@@ -203,6 +295,37 @@ const STRINGS: Record<VoiceLanguage, Partial<Record<StringKey, string>>> = {
       "माइक किंवा ब्राउझर आवाज उपलब्ध नाही. कृपया बटणे वापरा.",
     language_label: "भाषा",
     kb_voice_provider: "OmniRoute",
+    risk_your_area: "⚠️ तुमच्या भागातील धोका",
+    risk_low: "कमी धोका",
+    risk_medium: "मध्यम धोका",
+    risk_high: "जास्त धोका",
+    risk_critical: "गंभीर",
+    risk_expert_help: "🆘 तज्ञांना कॉल करा",
+    risk_expert_help_sub: "1800-103-AGRI वर कॉल करा",
+    risk_act_now: "आता करा:",
+    action_check_crop: "पीक कसे आहे?",
+    action_check_crop_sub: "शिफारशीनंतरचा निकाल सांगा",
+    follow_up_title: "पीक अपडेट",
+    follow_up_loading: "तुमचे रेकॉर्ड पाहत आहे...",
+    follow_up_none: "आता काही नाही.",
+    follow_up_none_body: "या वेळी कोणतीही फॉलो-अप बाकी नाही.",
+    follow_up_select: "ही कोणती शिफारस आहे?",
+    follow_up_case_label: "केस",
+    follow_up_case_improved: "पीक सुधारले ✓",
+    follow_up_case_not_improved: "पीक सुधारले नाही",
+    follow_up_case_expert: "मला तज्ञ हवा आहे 🆘",
+    follow_up_notes_placeholder: "काही सांगायचे असल्यास लिहा (पर्यायी)",
+    follow_up_submit: "अपडेट पाठवा",
+    follow_up_success_improved: "छान! तुमचा अपडेट नोंदवला.",
+    follow_up_success_not_improved: "ठीक. आम्ही आठवड्याने पुन्हा विचारू.",
+    follow_up_success_expert: "समजले. आम्ही तज्ञांना कळवू.",
+    follow_up_error: "क्षमस्व, अपडेट जतन करता आला नाही.",
+    follow_up_confirm_title: "तुम्ही सल्ला वापरला का?",
+    follow_up_confirm_body: "तुम्ही मागे दिलेला सल्ला वापरला का?",
+    follow_up_back: "मागे जा",
+    welcome_voice_intro:
+      "नमस्कार! मी कृषिकवच आहे. मी तुमच्या पिकाच्या आरोग्याची तपासणी करण्यास मदत करतो. हिरव्या बटणाने तुमच्या पिकाचा फोटो काढा. निळ्या बटणाने विचारा की काय करायला पाहिजे. नारंगी बटणाने तुमच्या भागातील रोगाचा धोका पहा. लाल बटणाने कृषी तज्ञांची मदत घ्या. आणि जांभळे बटण दाबून माहिती पुन्हा ऐका.",
+    welcome_autoplay_prompt: "🔊 आवाज ऐकण्यासाठी इथे दाबा",
   },
 }
 

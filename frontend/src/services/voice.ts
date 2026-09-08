@@ -28,22 +28,19 @@ declare global {
  * Web Speech API provider.
  * Uses browser's SpeechSynthesis + SpeechRecognition.
  * Handles environments where recognition is missing (Firefox, Safari iOS < 14.5).
+ *
+ * Interruptible TTS: a token counter ensures only the latest speak()
+ * request's utterance is heard — older in-flight utterances are discarded.
  */
 export class WebSpeechProvider implements VoiceProvider {
   private recognition: any | null = null
   private interimHandler: ((text: string) => void) | null = null
-  private supportedRecognition: boolean
-  private supportedSynthesis: boolean
-
-  constructor() {
-    const SR =
-      typeof window !== "undefined"
-        ? window.SpeechRecognition || window.webkitSpeechRecognition
-        : undefined
-    this.supportedRecognition = !!SR
-    this.supportedSynthesis =
-      typeof window !== "undefined" && !!window.speechSynthesis
-  }
+  private supportedRecognition!: boolean
+  private supportedSynthesis!: boolean
+  // Token counter for interruptible TTS. Incremented each time speak()
+  // starts. Any in-flight utterance whose onend/onerror fires with a
+  // stale token silently discards itself.
+  private _activeToken = 0
 
   isSupported(): boolean {
     return this.supportedSynthesis
@@ -68,13 +65,25 @@ export class WebSpeechProvider implements VoiceProvider {
         return
       }
       try {
+        // New request: cancel any in-flight utterance and claim the token so
+        // any older in-flight utterance discards itself on its onend/onerror.
+        this._activeToken += 1
+        const token = this._activeToken
         window.speechSynthesis.cancel()
         const utter = new SpeechSynthesisUtterance(text)
         utter.lang = language
         utter.rate = 0.95
         utter.pitch = 1
-        utter.onend = () => resolve()
-        utter.onerror = () => resolve()
+        utter.onend = () => {
+          // Only resolve for the latest request; a stale utterance must not
+          // unblock the newer one.
+          if (token !== this._activeToken) return
+          resolve()
+        }
+        utter.onerror = () => {
+          if (token !== this._activeToken) return
+          resolve()
+        }
         window.speechSynthesis.speak(utter)
       } catch {
         resolve()
@@ -83,6 +92,9 @@ export class WebSpeechProvider implements VoiceProvider {
   }
 
   cancel(): void {
+    // Invalidate the token so any in-flight utterance's onend/onerror fires
+    // with a stale token and discards itself.
+    this._activeToken += 1
     if (this.supportedSynthesis) {
       try {
         window.speechSynthesis.cancel()

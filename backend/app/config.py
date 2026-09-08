@@ -41,9 +41,11 @@ class Settings:
     # Voice / speech
     SPEECH_ENABLED: bool = os.getenv("SPEECH_ENABLED", "true").lower() == "true"
 
-    # Voice provider: "omniroute" (primary) or "browser" (fallback)
-    # When "omniroute", backend proxies STT/TTS to the configured OmniRoute-compatible endpoint.
-    # When "browser", the frontend uses Web Speech API directly.
+    # Voice provider: ElevenLabs for both STT and TTS (or "browser" as fallback).
+    VOICE_STT_PROVIDER: str = os.getenv("VOICE_STT_PROVIDER", "elevenlabs").lower()
+    # TTS is "elevenlabs" (production) or "browser" (fallback).
+    VOICE_TTS_PROVIDER: str = os.getenv("VOICE_TTS_PROVIDER", "elevenlabs").lower()
+    # Legacy alias — still used when both STT and TTS point to OmniRoute.
     VOICE_PROVIDER: str = os.getenv("VOICE_PROVIDER", "omniroute").lower()
 
     # Default voice language (BCP-47). Frontend also reads this via /api/voice/config.
@@ -63,6 +65,23 @@ class Settings:
     # Request timeout for upstream voice API calls (seconds).
     OMNIROUTE_TIMEOUT_SECONDS: float = float(
         os.getenv("OMNIROUTE_TIMEOUT_SECONDS", "20")
+    )
+
+    # ElevenLabs configuration (shared for STT and TTS)
+    ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
+    # STT: model_id for speech-to-text
+    ELEVENLABS_STT_MODEL: str = os.getenv("ELEVENLABS_STT_MODEL", "scribe_v2")
+    ELEVENLABS_VOICE_ID: str = os.getenv(
+        "ELEVENLABS_VOICE_ID", "IvLWq57RKibBrqZGpQrC"
+    )
+    ELEVENLABS_MODEL_ID: str = os.getenv(
+        "ELEVENLABS_MODEL_ID", "eleven_multilingual_v2"
+    )
+    ELEVENLABS_OUTPUT_FORMAT: str = os.getenv(
+        "ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128"
+    )
+    ELEVENLABS_TIMEOUT_SECONDS: float = float(
+        os.getenv("ELEVENLABS_TIMEOUT_SECONDS", "20")
     )
 
     # Demo time simulation

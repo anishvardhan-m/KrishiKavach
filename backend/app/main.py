@@ -27,7 +27,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.config import settings
 from app.database import get_async_session, init_db, close_db
 from app.models import (
-    Case, CaseFeedback, DiseaseReport, Expert, Farmer, Farm, WeatherContext,
+    Case, CaseFeedback, DiseaseReport, Escalation, Expert, Farmer, Farm,
+    WeatherContext,
 )
 from app.schemas import (
     CaseCreateResponse,
@@ -35,17 +36,31 @@ from app.schemas import (
     CaseResponse,
     DemoAdvanceRequest,
     DemoTimeResponse,
+    DiseaseBreakdownEntry,
     DiseaseReportResponse,
+    DistrictRiskProfile,
+    DistrictSummary,
+    EscalationCreate,
+    EscalationListResponse,
+    EscalationResponse,
+    EscalationVerdictRequest,
     FeedbackCreate,
     FeedbackResponse,
     HealthResponse,
+    InterventionStats,
+    OutbreakSummary,
     PredictionResult,
+    RiskFactorResponse,
+    RiskForecastResponse,
     SpeakRequest,
     TranscribeResponse,
     UploadResponse,
     VoiceConfigResponse,
+    WeatherSummary,
 )
 from app.services import omniroute
+from app.services import elevenlabs_tts
+from app.services import elevenlabs_stt
 from app.services.case_service import (
     advance_demo_days,
     create_case_from_prediction,
@@ -64,6 +79,20 @@ from app.services.prediction import (
     Severity,
     get_prediction_service,
     predict_and_recommend,
+)
+from app.services.risk_forecast import compute_forecast, parse_wkt_point
+from app.services.officer_service import (
+    get_all_district_summaries,
+    get_district_summary,
+)
+from app.services.escalation_service import (
+    EscalationError,
+    VALID_VERDICTS,
+    create_escalation,
+    escalation_status_for_case,
+    get_active_escalation,
+    list_escalations,
+    submit_verdict,
 )
 from app.services.voice import get_voice_controller
 
@@ -240,6 +269,41 @@ async def predict_and_create_case(
     prediction_dict["escalate"] = recommendation.escalate
     prediction_dict["follow_up_days"] = recommendation.follow_up_days
 
+    # Risk forecast (lightweight, deterministic, demo-time-aware, geo-aware)
+    farm_loc = parse_wkt_point(farm.location_point) if farm.location_point else None
+    farm_lon = farm_loc[0] if farm_loc else None
+    farm_lat = farm_loc[1] if farm_loc else None
+    forecast = await compute_forecast(
+        session,
+        district=district or farmer.district or "Unknown",
+        crop=prediction.crop,
+        disease=prediction.disease,
+        severity=prediction.severity.value,
+        confidence=prediction.confidence,
+        as_of=case.detected_at,
+        farm_id=str(farm.id),
+        farm_lon=farm_lon,
+        farm_lat=farm_lat,
+    )
+    forecast_response = RiskForecastResponse(
+        risk_score=forecast.risk_score,
+        risk_level=forecast.risk_level,
+        contributing_factors=[
+            RiskFactorResponse(
+                name=f.name,
+                weight=f.weight,
+                raw_signal=f.raw_signal,
+                contribution=f.contribution,
+                note=f.note,
+            )
+            for f in forecast.contributing_factors
+        ],
+        recommended_action=forecast.recommended_action,
+        explanation=forecast.explanation,
+        computed_at=forecast.computed_at,
+        demo_time_used=forecast.demo_time_used,
+    )
+
     return CaseCreateResponse(
         case_id=case.id,
         prediction=PredictionResult(**prediction_dict),
@@ -250,6 +314,7 @@ async def predict_and_create_case(
         next_follow_up_at=case.next_follow_up_at,
         case_status=case.case_status,
         is_demo_prediction=prediction.is_demo,
+        risk_forecast=forecast_response,
     )
 
 
@@ -259,12 +324,18 @@ async def predict_and_create_case(
 
 @app.get("/api/cases/due-for-follow-up", response_model=CaseListResponse, tags=["farmer"])
 async def list_cases_due_for_follow_up(
+    farmer_id: Optional[UUID] = None,
     session: AsyncSession = Depends(get_async_session),
 ) -> CaseListResponse:
-    """List cases that are due for follow-up based on current demo time."""
+    """List active cases where next_follow_up_at <= today.
+
+    When farmer_id is provided, returns only that farmer's cases.
+    Without farmer_id (demo mode), returns all due cases so the farmer
+    can identify their own by disease/crop.
+    """
     from app.services.case_service import get_cases_due_for_follow_up
     today = get_demo_date()
-    cases = await get_cases_due_for_follow_up(session, as_of_date=today)
+    cases = await get_cases_due_for_follow_up(session, as_of_date=today, farmer_id=farmer_id)
     return CaseListResponse(
         cases=[CaseResponse.model_validate(c) for c in cases],
         total=len(cases),
@@ -303,7 +374,11 @@ async def get_case(
     case = result.scalar_one_or_none()
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    return CaseResponse.model_validate(case)
+    response = CaseResponse.model_validate(case)
+    status, latest_verdict = await escalation_status_for_case(session, case.id)
+    response.escalation_status = status
+    response.latest_verdict = latest_verdict
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +417,219 @@ async def submit_feedback(
 
     await session.commit()
     return FeedbackResponse.model_validate(feedback)
+
+
+# ---------------------------------------------------------------------------
+# Expert escalation endpoints (SIH26131 expert review workflow)
+# ---------------------------------------------------------------------------
+
+async def _escalation_to_response(
+    session: AsyncSession,
+    esc: Escalation,
+    *,
+    district: Optional[str] = None,
+    predicted_disease: Optional[str] = None,
+    predicted_crop: Optional[str] = None,
+) -> EscalationResponse:
+    """Build an EscalationResponse from an Escalation + optional joined
+    context. Only public context fields are added — no farmer PII.
+    """
+    expert_name: Optional[str] = None
+    if esc.expert_id is not None:
+        expert = (await session.execute(
+            select(Expert).where(Expert.id == esc.expert_id)
+        )).scalar_one_or_none()
+        if expert is not None:
+            expert_name = expert.name
+
+    severity: Optional[str] = None
+    uncertainty_flag = False
+    if predicted_disease is None or predicted_crop is None or severity is None:
+        case = (await session.execute(
+            select(Case).where(Case.id == esc.case_id)
+        )).scalar_one_or_none()
+        if case is not None:
+            predicted_disease = predicted_disease or case.predicted_disease
+            predicted_crop = predicted_crop or case.predicted_crop
+            severity = severity or case.severity
+            uncertainty_flag = case.uncertainty_flag
+
+    return EscalationResponse(
+        id=esc.id,
+        case_id=esc.case_id,
+        expert_id=esc.expert_id,
+        expert_name=expert_name,
+        escalated_at=esc.escalated_at,
+        resolved_at=esc.resolved_at,
+        expert_notes=esc.expert_notes,
+        expert_verdict=esc.expert_verdict,
+        predicted_disease=predicted_disease,
+        predicted_crop=predicted_crop,
+        severity=severity,
+        district=district,
+        uncertainty_flag=uncertainty_flag,
+    )
+
+
+@app.post(
+    "/api/cases/{case_id}/escalate",
+    response_model=EscalationResponse,
+    status_code=201,
+    tags=["escalation"],
+)
+async def escalate_case(
+    case_id: UUID,
+    payload: Optional[EscalationCreate] = None,
+    session: AsyncSession = Depends(get_async_session),
+) -> EscalationResponse:
+    """Escalate a case for expert review.
+
+    Creates an Escalation and (if the case was active/resolved) marks the
+    case as `escalated`. Returns 409 if an active escalation already exists
+    for the case, 404 if the case does not exist.
+
+    The existing ML model and prediction pipeline are NOT touched. Use the
+    `escalate` flag on a prediction (`PredictionResult.escalate`) — already
+    surfaced in the farmer UI — to decide when to call this endpoint.
+    """
+    body = payload or EscalationCreate()
+    try:
+        esc = await create_escalation(
+            session,
+            case_id=case_id,
+            expert_id=body.expert_id,
+            reason=body.reason,
+        )
+    except EscalationError as e:
+        if "not found" in str(e).lower():
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    await session.commit()
+    await session.refresh(esc)
+    response = await _escalation_to_response(session, esc)
+    return response
+
+
+@app.post(
+    "/api/escalations/{escalation_id}/verdict",
+    response_model=EscalationResponse,
+    tags=["escalation"],
+)
+async def submit_escalation_verdict(
+    escalation_id: UUID,
+    payload: EscalationVerdictRequest,
+    session: AsyncSession = Depends(get_async_session),
+) -> EscalationResponse:
+    """Submit an expert verdict on an escalation.
+
+    Verdict values: `confirmed` | `rejected` | `needs_more_evidence`.
+    Marks the escalation resolved and updates the underlying case status:
+      - confirmed    → case stays/returns to `active`
+      - rejected     → case is `closed`
+      - needs_more_evidence → case returns to `active` (a new escalation
+                              can be raised if the farmer reports back)
+    Returns 400 for invalid verdicts, 404 for unknown escalation,
+    409 if the escalation is already resolved.
+    """
+    try:
+        esc = await submit_verdict(
+            session,
+            escalation_id=escalation_id,
+            verdict=payload.verdict,
+            expert_notes=payload.expert_notes,
+            expert_id=payload.expert_id,
+        )
+    except EscalationError as e:
+        msg = str(e).lower()
+        if "invalid verdict" in msg:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{str(e)} (valid: {', '.join(VALID_VERDICTS)})",
+            ) from e
+        if "not found" in msg:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    await session.commit()
+    await session.refresh(esc)
+    response = await _escalation_to_response(session, esc)
+    return response
+
+
+@app.get(
+    "/api/escalations",
+    response_model=EscalationListResponse,
+    tags=["escalation"],
+)
+async def list_escalations_endpoint(
+    status: str = "all",
+    session: AsyncSession = Depends(get_async_session),
+) -> EscalationListResponse:
+    """List escalations for the officer/expert dashboard.
+
+    Query params:
+      - `status`: `active` (default unresolved), `resolved`, or `all`.
+
+    Farmer PII (names, phones, farmer IDs) is NEVER included. Each row
+    carries only public context: case_id, district, predicted disease/crop,
+    severity, uncertainty flag, escalation timestamps, and verdict (when
+    recorded).
+    """
+    try:
+        rows = await list_escalations(session, status=status)
+    except EscalationError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    items: list[EscalationResponse] = []
+    for esc, district, predicted_disease, predicted_crop in rows:
+        items.append(
+            await _escalation_to_response(
+                session,
+                esc,
+                district=district,
+                predicted_disease=predicted_disease,
+                predicted_crop=predicted_crop,
+            )
+        )
+    return EscalationListResponse(escalations=items, total=len(items))
+
+
+@app.get(
+    "/api/escalations/{escalation_id}",
+    response_model=EscalationResponse,
+    tags=["escalation"],
+)
+async def get_escalation(
+    escalation_id: UUID,
+    session: AsyncSession = Depends(get_async_session),
+) -> EscalationResponse:
+    """Fetch a single escalation by ID."""
+    result = await session.execute(
+        select(Escalation).where(Escalation.id == escalation_id)
+    )
+    esc = result.scalar_one_or_none()
+    if esc is None:
+        raise HTTPException(status_code=404, detail="Escalation not found")
+    # Resolve public context fields
+    case = (await session.execute(
+        select(Case).where(Case.id == esc.case_id)
+    )).scalar_one_or_none()
+    district = None
+    if case is not None:
+        farmer_district = (
+            await session.execute(
+                select(Farmer.district)
+                .join(Farm, Farm.farmer_id == Farmer.id)
+                .where(Farm.id == case.farm_id)
+            )
+        ).scalar_one_or_none()
+        district = farmer_district
+    return await _escalation_to_response(
+        session,
+        esc,
+        district=district,
+        predicted_disease=case.predicted_disease if case else None,
+        predicted_crop=case.predicted_crop if case else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +718,183 @@ async def list_disease_reports(
 
 
 # ---------------------------------------------------------------------------
+# Risk forecast endpoints
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/api/risk/{district}/{crop}",
+    response_model=RiskForecastResponse,
+    tags=["risk"],
+)
+async def get_risk_forecast(
+    district: str,
+    crop: str,
+    disease: Optional[str] = None,
+    session: AsyncSession = Depends(get_async_session),
+) -> RiskForecastResponse:
+    """Compute a lightweight explainable risk forecast for a district/crop.
+
+    Uses ONLY data already in the project:
+    - Live cases in the district (last 14 days)
+    - Seeded disease_reports aggregates
+    - Seeded weather_contexts (soil moisture, evapotranspiration;
+      temperature/humidity contribute 0 if not yet populated)
+    - Predicted severity (if provided via disease) and model confidence (fixed 0.5
+      when not provided, as this endpoint is read-only without a prediction).
+
+    This is NOT a trained model. It is a deterministic blend of trusted signals.
+    """
+    forecast = await compute_forecast(
+        session,
+        district=district,
+        crop=crop,
+        disease=disease,
+        severity=None,
+        confidence=0.5,
+    )
+    return RiskForecastResponse(
+        risk_score=forecast.risk_score,
+        risk_level=forecast.risk_level,
+        contributing_factors=[
+            RiskFactorResponse(
+                name=f.name,
+                weight=f.weight,
+                raw_signal=f.raw_signal,
+                contribution=f.contribution,
+                note=f.note,
+            )
+            for f in forecast.contributing_factors
+        ],
+        recommended_action=forecast.recommended_action,
+        explanation=forecast.explanation,
+        computed_at=forecast.computed_at,
+        demo_time_used=forecast.demo_time_used,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Agriculture Officer dashboard endpoints
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/api/officer/district-summary",
+    response_model=list[DistrictSummary],
+    tags=["officer"],
+)
+async def get_officer_district_summary(
+    district: Optional[str] = None,
+    include_factors: bool = False,
+    session: AsyncSession = Depends(get_async_session),
+) -> list[DistrictSummary]:
+    """District-level summary for the Agriculture Officer dashboard.
+
+    Returns aggregated data from existing tables — no new DB tables, no farmer PII.
+
+    Per-district data:
+    - Case counts: total, active, resolved, escalated, follow-up due
+    - Severity breakdown: low / medium / high
+    - Disease breakdown: per (crop, disease) with case + farm counts
+    - Intervention stats: from CaseFeedback (attempted treatment, improved, etc.)
+    - Active outbreaks: from seeded DiseaseReport (no farmer PII)
+    - Weather context: latest from WeatherContext
+    - Risk profile: via existing compute_forecast engine
+    - Centroid: hardcoded WGS-84 coordinates for Maharashtra district HQ
+
+    Query params:
+    - `district`: if provided, returns a single-item list for that district.
+      If omitted, returns summaries for all Maharashtra districts.
+    - `include_factors`: if true, includes the per-factor risk breakdown
+      (weights, contributions) in the response. Default false.
+
+    Privacy: farmer names, phone numbers, and farmer IDs are NEVER included.
+    Suitable as the data source for a future Maharashtra heatmap.
+    """
+    if district:
+        summary = await get_district_summary(
+            session, district, include_factors=include_factors,
+        )
+        return [_district_summary_to_schema(summary)]
+    summaries = await get_all_district_summaries(
+        session, include_factors=include_factors,
+    )
+    return [_district_summary_to_schema(s) for s in summaries]
+
+
+def _district_summary_to_schema(s) -> DistrictSummary:
+    """Convert the dataclass DistrictSummary to the Pydantic schema."""
+    return DistrictSummary(
+        district=s.district,
+        state=s.state,
+        centroid_lon=s.centroid_lon,
+        centroid_lat=s.centroid_lat,
+        total_cases=s.total_cases,
+        active_cases=s.active_cases,
+        resolved_cases=s.resolved_cases,
+        escalated_cases=s.escalated_cases,
+        follow_up_due=s.follow_up_due,
+        severity_low=s.severity_low,
+        severity_medium=s.severity_medium,
+        severity_high=s.severity_high,
+        disease_breakdown=[
+            DiseaseBreakdownEntry(
+                crop=e.crop,
+                disease=e.disease,
+                case_count=e.case_count,
+                farm_count=e.farm_count,
+                severity=e.severity,
+                risk_level=e.risk_level,
+                last_detected=e.last_detected,
+            )
+            for e in s.disease_breakdown
+        ],
+        interventions=(
+            InterventionStats(
+                total_feedbacks=s.interventions.total_feedbacks,
+                attempted_treatment=s.interventions.attempted_treatment,
+                crop_improved=s.interventions.crop_improved,
+                crop_not_improved=s.interventions.crop_not_improved,
+                no_feedback_yet=s.interventions.no_feedback_yet,
+            )
+            if s.interventions
+            else None
+        ),
+        active_outbreaks=[
+            OutbreakSummary(
+                crop_type=o.crop_type,
+                disease_type=o.disease_type,
+                risk_level=o.risk_level,
+                affected_farms=o.affected_farms,
+                total_cases_reported=o.total_cases_reported,
+            )
+            for o in s.active_outbreaks
+        ],
+        weather=(
+            WeatherSummary(
+                soil_moisture_percent=s.weather.soil_moisture_percent,
+                evapotranspiration_mm=s.weather.evapotranspiration_mm,
+                temperature_c=s.weather.temperature_c,
+                humidity_percent=s.weather.humidity_percent,
+                recorded_at=s.weather.recorded_at,
+            )
+            if s.weather
+            else None
+        ),
+        risk_profile=(
+            DistrictRiskProfile(
+                risk_score=s.risk_profile.risk_score,
+                risk_level=s.risk_profile.risk_level,
+                recommended_action=s.risk_profile.recommended_action,
+                explanation=s.risk_profile.explanation,
+                contributing_factors=s.risk_profile.contributing_factors,
+            )
+            if s.risk_profile
+            else None
+        ),
+        computed_at=s.computed_at,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Voice prompt endpoint (for the frontend VoiceInteractionController)
 # ---------------------------------------------------------------------------
 
@@ -477,25 +942,48 @@ async def parse_voice_intent(payload: dict) -> dict:
 async def get_voice_config() -> VoiceConfigResponse:
     """Return voice configuration for the frontend.
 
-    Includes the active provider, default language, and configured
-    STT/TTS model + voice — but NEVER the upstream API key.
+    Includes the active STT/TTS provider, default language, and configured
+    model + voice — but NEVER the upstream API key.
     """
+    stt_provider = settings.VOICE_STT_PROVIDER
+    tts_provider = settings.VOICE_TTS_PROVIDER
     return VoiceConfigResponse(
-        provider=settings.VOICE_PROVIDER,
+        provider=stt_provider if stt_provider == tts_provider else "mixed",
+        stt_provider=stt_provider,
+        tts_provider=tts_provider,
         default_language=settings.DEFAULT_VOICE_LANGUAGE,
         stt_model=(
             settings.OMNIROUTE_STT_MODEL
-            if settings.VOICE_PROVIDER == "omniroute"
+            if stt_provider == "omniroute"
+            else settings.ELEVENLABS_STT_MODEL
+            if stt_provider == "elevenlabs"
             else None
         ),
         tts_model=(
             settings.OMNIROUTE_TTS_MODEL
-            if settings.VOICE_PROVIDER == "omniroute"
+            if tts_provider == "omniroute"
+            else settings.ELEVENLABS_MODEL_ID
+            if tts_provider == "elevenlabs"
             else None
         ),
         tts_voice=(
             settings.OMNIROUTE_TTS_VOICE
-            if settings.VOICE_PROVIDER == "omniroute"
+            if tts_provider == "omniroute"
+            else None
+        ),
+        elevenlabs_stt_model=(
+            settings.ELEVENLABS_STT_MODEL
+            if stt_provider == "elevenlabs"
+            else None
+        ),
+        elevenlabs_voice_id=(
+            settings.ELEVENLABS_VOICE_ID
+            if tts_provider == "elevenlabs"
+            else None
+        ),
+        elevenlabs_model_id=(
+            settings.ELEVENLABS_MODEL_ID
+            if tts_provider == "elevenlabs"
             else None
         ),
         browser_fallback_supported=True,
@@ -507,96 +995,166 @@ async def transcribe(
     file: UploadFile = File(...),
     language: str = Form("hi-IN"),
 ) -> TranscribeResponse:
-    """Receive recorded audio and return a transcript using OmniRoute.
+    """Receive recorded audio and return a transcript using ElevenLabs STT.
 
     The browser records audio, POSTs the audio file here, and the backend
-    forwards it to OmniRoute. If OmniRoute is unavailable, the response
+    forwards it to ElevenLabs. If ElevenLabs is unavailable, the response
     status signals the client to fall back to browser STT.
     """
-    if settings.VOICE_PROVIDER != "omniroute":
-        raise HTTPException(
-            status_code=503,
-            detail="OmniRoute STT is not enabled (VOICE_PROVIDER != omniroute).",
+    stt_provider = settings.VOICE_STT_PROVIDER
+
+    if stt_provider == "elevenlabs":
+        if not elevenlabs_stt.is_configured():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "ElevenLabs STT is not configured on the backend. "
+                    "Set ELEVENLABS_API_KEY in the backend environment."
+                ),
+            )
+
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Empty audio payload")
+
+        # ~10MB cap to match upload limit
+        if len(content) > settings.MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Audio too large. Max: {settings.MAX_UPLOAD_BYTES} bytes",
+            )
+
+        filename = file.filename or "recording.webm"
+        content_type = file.content_type or "audio/webm"
+
+        try:
+            result = await elevenlabs_stt.transcribe_audio(
+                audio_bytes=content,
+                filename=filename,
+                content_type=content_type,
+                language=language,
+            )
+        except elevenlabs_stt.ElevenLabsSTTError as e:
+            raise HTTPException(status_code=502, detail=f"STT upstream error: {e}") from e
+        except elevenlabs_stt.ElevenLabsSTTUnavailable as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+
+        return TranscribeResponse(
+            text=result["text"],
+            language=result["language"],
+            provider=result["provider"],
+            confidence=result.get("confidence"),
         )
-    if not omniroute.is_configured():
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "OmniRoute is not configured on the backend. "
-                "Set OMNIROUTE_API_KEY in the backend environment."
-            ),
+
+    if stt_provider == "omniroute":
+        # Legacy path — kept for backward compatibility
+        if not omniroute.is_configured():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "OmniRoute is not configured on the backend. "
+                    "Set OMNIROUTE_API_KEY in the backend environment."
+                ),
+            )
+
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Empty audio payload")
+
+        if len(content) > settings.MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Audio too large. Max: {settings.MAX_UPLOAD_BYTES} bytes",
+            )
+
+        filename = file.filename or "recording.webm"
+        content_type = file.content_type or "audio/webm"
+
+        try:
+            result = await omniroute.transcribe_audio(
+                audio_bytes=content,
+                filename=filename,
+                content_type=content_type,
+                language=language,
+            )
+        except omniroute.OmniRouteError as e:
+            raise HTTPException(status_code=502, detail=f"STT upstream error: {e}") from e
+        except omniroute.OmniRouteUnavailable as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+
+        return TranscribeResponse(
+            text=result["text"],
+            language=result["language"],
+            provider=result["provider"],
+            confidence=result.get("confidence"),
         )
 
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Empty audio payload")
-
-    # ~10MB cap to match upload limit
-    if len(content) > settings.MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Audio too large. Max: {settings.MAX_UPLOAD_BYTES} bytes",
-        )
-
-    filename = file.filename or "recording.webm"
-    content_type = file.content_type or "audio/webm"
-
-    try:
-        result = await omniroute.transcribe_audio(
-            audio_bytes=content,
-            filename=filename,
-            content_type=content_type,
-            language=language,
-        )
-    except omniroute.OmniRouteError as e:
-        raise HTTPException(status_code=502, detail=f"STT upstream error: {e}") from e
-    except omniroute.OmniRouteUnavailable as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
-
-    return TranscribeResponse(
-        text=result["text"],
-        language=result["language"],
-        provider=result["provider"],
-        confidence=result.get("confidence"),
+    # stt_provider == "browser" or unknown — signal frontend to use Web Speech API.
+    raise HTTPException(
+        status_code=503,
+        detail="Backend STT is disabled. Use browser STT.",
     )
 
 
 @app.post("/api/voice/speak", tags=["voice"])
 async def speak(payload: SpeakRequest):
-    """Synthesize speech via OmniRoute and return the audio bytes.
+    """Synthesize speech and return the audio bytes.
 
-    Returns the raw audio body (e.g. audio/mpeg). The frontend plays it
-    directly with the HTMLAudioElement. If OmniRoute is unavailable, the
-    response status signals the client to fall back to browser TTS.
+    Routes to the configured TTS provider:
+      - elevenlabs → ElevenLabs (voice: Rian, model: eleven_multilingual_v2)
+      - omniroute  → OmniRoute-compatible endpoint
+    Returns the raw audio body (audio/mpeg). The frontend plays it
+    directly with the HTMLAudioElement. If the TTS provider is unavailable,
+    the response status signals the client to fall back to browser TTS.
     """
-    if settings.VOICE_PROVIDER != "omniroute":
-        raise HTTPException(
-            status_code=503,
-            detail="OmniRoute TTS is not enabled (VOICE_PROVIDER != omniroute).",
-        )
-    if not omniroute.is_configured():
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "OmniRoute is not configured on the backend. "
-                "Set OMNIROUTE_API_KEY in the backend environment."
-            ),
-        )
+    tts_provider = settings.VOICE_TTS_PROVIDER
 
-    try:
-        audio = await omniroute.synthesize_speech(
-            text=payload.text,
-            language=payload.language,
-            voice=payload.voice,
-        )
-    except omniroute.OmniRouteError as e:
-        raise HTTPException(status_code=502, detail=f"TTS upstream error: {e}") from e
-    except omniroute.OmniRouteUnavailable as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
+    if tts_provider == "elevenlabs":
+        if not elevenlabs_tts.is_configured():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "ElevenLabs TTS is not configured on the backend. "
+                    "Set ELEVENLABS_API_KEY in the backend environment."
+                ),
+            )
+        try:
+            audio = await elevenlabs_tts.synthesize_speech(
+                text=payload.text,
+                language=payload.language,
+            )
+        except elevenlabs_tts.ElevenLabsError as e:
+            raise HTTPException(status_code=502, detail=f"TTS upstream error: {e}") from e
+        except elevenlabs_tts.ElevenLabsUnavailable as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        return Response(content=audio, media_type="audio/mpeg")
 
-    # Try to honor whatever content-type OmniRoute returned; fall back to MP3.
-    media_type = "audio/mpeg"
-    return Response(content=audio, media_type=media_type)
+    if tts_provider == "omniroute":
+        if not omniroute.is_configured():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "OmniRoute TTS is not configured on the backend. "
+                    "Set OMNIROUTE_API_KEY in the backend environment."
+                ),
+            )
+        try:
+            audio = await omniroute.synthesize_speech(
+                text=payload.text,
+                language=payload.language,
+                voice=payload.voice,
+            )
+        except omniroute.OmniRouteError as e:
+            raise HTTPException(status_code=502, detail=f"TTS upstream error: {e}") from e
+        except omniroute.OmniRouteUnavailable as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        return Response(content=audio, media_type="audio/mpeg")
+
+    # tts_provider == "browser" or unknown — signal frontend to use Web Speech API.
+    raise HTTPException(
+        status_code=503,
+        detail="Backend TTS is disabled. Use browser TTS.",
+    )
 
 
 # ---------------------------------------------------------------------------

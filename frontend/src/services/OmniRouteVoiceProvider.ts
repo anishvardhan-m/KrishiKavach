@@ -1,10 +1,10 @@
 /**
  * OmniRouteVoiceProvider — primary voice provider.
  *
- * STT: records audio → POST to backend → OmniRoute transcription.
- * TTS: POST text to backend → OmniRoute audio → HTMLAudioElement.
+ * STT: records audio → POST to backend → ElevenLabs/OmniRoute transcription.
+ * TTS: POST text to backend → ElevenLabs/OmniRoute audio → HTMLAudioElement.
  *
- * Falls back to BrowserVoiceProvider when OmniRoute is unavailable
+ * Falls back to BrowserVoiceProvider when the backend is unavailable
  * (503, unreachable, or no API key configured).
  */
 
@@ -14,6 +14,7 @@ import {
   isOmniRouteUnavailable,
   speakToUrl,
   transcribe,
+  AutoplayBlocked,
 } from "./omniroute"
 import type { VoiceConfig } from "./omniroute"
 import { useAudioRecorder } from "../hooks/useAudioRecorder"
@@ -31,7 +32,18 @@ export class OmniRouteVoiceProvider implements VoiceProvider {
   private readonly _getBrowser: () => VoiceProvider | null
   private readonly _getConfig: () => VoiceConfig | null
 
+  // ── Interruptible TTS ──────────────────────────────────────────────────
+  //
+  // KrishiKavach must play ONE voice at a time. Any new speak() request
+  // immediately cancels any currently-playing audio and discards any
+  // in-flight async TTS request that belongs to an older request.
+  //
+  // A monotonically increasing token is used so that an older async request
+  // that finishes after a newer request has started can detect that it has
+  // been superseded and must NOT start playback. This prevents race
+  // conditions where two voices overlap.
   private _currentAudio: HTMLAudioElement | null = null
+  private _activeToken = 0
 
   constructor(deps: OmniRouteVoiceProviderDeps) {
     this._getRecorder = deps.getRecorder
@@ -44,26 +56,37 @@ export class OmniRouteVoiceProvider implements VoiceProvider {
   }
 
   isOmniRouteAvailable(): boolean {
-    return this._getConfig()?.provider === "omniroute"
+    // Backend STT is available when stt_provider is ElevenLabs or OmniRoute.
+    const stt = this._getConfig()?.stt_provider
+    return stt === "elevenlabs" || stt === "omniroute"
   }
 
   onInterim(_handler: (text: string) => void): () => void {
-    // Interim transcript is not streamed from OmniRoute in this design.
+    // Interim transcript is not streamed from the backend in this design.
     return () => {}
   }
 
   // ── TTS ────────────────────────────────────────────────────────────────
 
   async speak(text: string, language: VoiceLanguage): Promise<void> {
+    // New request: immediately stop any currently-playing audio and claim
+    // the token so any in-flight older request discards itself.
     this.cancel()
+    const token = this._activeToken
+
     const cfg = this._getConfig()
-    if (cfg?.provider !== "omniroute") {
+    // Use backend TTS when configured (ElevenLabs or OmniRoute).
+    const useBackend =
+      cfg?.tts_provider === "elevenlabs" || cfg?.tts_provider === "omniroute"
+    if (!useBackend) {
       await this._fallbackSpeak(text, language)
       return
     }
     try {
       const url = await speakToUrl(text, language)
-      await this._play(url)
+      // If a newer speak() started while we were fetching, discard this one.
+      if (token !== this._activeToken) return
+      await this._play(url, token)
     } catch (e) {
       if (isOmniRouteUnavailable(e)) {
         await this._fallbackSpeak(text, language)
@@ -78,24 +101,44 @@ export class OmniRouteVoiceProvider implements VoiceProvider {
     if (bp) await bp.speak(text, language)
   }
 
-  private _play(url: string): Promise<void> {
-    return new Promise((resolve) => {
+  private _play(url: string, token: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      // If this request was already superseded before playback began, do
+      // not create a new audio element at all.
+      if (token !== this._activeToken) {
+        resolve()
+        return
+      }
       const audio = new Audio(url)
       this._currentAudio = audio
-      const done = () => {
+      const cleanup = () => {
         this._currentAudio = null
+      }
+      audio.onended = () => {
+        cleanup()
         resolve()
       }
-      audio.onended = done
-      audio.onerror = done
-      audio.play().catch(() => {
-        this._currentAudio = null
+      audio.onerror = () => {
+        cleanup()
         resolve()
+      }
+      audio.play().catch((err) => {
+        cleanup()
+        // Detect browser autoplay block → surface as AutoplayBlocked so the
+        // UI can prompt the user to tap rather than silently falling back.
+        if (err?.name === "NotAllowedError" || err?.name === "AbortError") {
+          reject(new AutoplayBlocked())
+        } else {
+          reject(err)
+        }
       })
     })
   }
 
   cancel(): void {
+    // Invalidate the current token so any in-flight async request that
+    // resolves afterwards will see it is stale and discard its audio.
+    this._activeToken += 1
     if (this._currentAudio) {
       this._currentAudio.pause()
       this._currentAudio = null
@@ -106,33 +149,33 @@ export class OmniRouteVoiceProvider implements VoiceProvider {
 
   // ── STT ────────────────────────────────────────────────────────────────
 
+  /**
+   * Listen using the configured backend STT provider (ElevenLabs or OmniRoute).
+   * Falls back to browser Web Speech API on error.
+   */
   async listen(language: VoiceLanguage, timeoutMs = 8000): Promise<string | null> {
     const cfg = this._getConfig()
+    const sttProvider = cfg?.stt_provider
 
-    if (cfg?.provider === "omniroute") {
-      const result = await this._listenOmniRoute(language, timeoutMs)
-      // If the recording yielded no audio, return null (caller handles it)
-      if (result === null && !this._getRecorder().error) {
-        return null
-      }
-      if (result) return result
+    // Use backend STT when ElevenLabs or OmniRoute is configured.
+    if (sttProvider === "elevenlabs" || sttProvider === "omniroute") {
+      const result = await this._listenBackend(language, timeoutMs)
+      if (result !== null) return result
+      // Backend returned null — fall through to browser fallback if available.
     }
 
-    // Fallback to browser speech recognition
+    // Browser fallback
     const bp = this._getBrowser()
     if (bp) return bp.listen(language, timeoutMs)
     return null
   }
 
   /**
-   * Record audio for up to `timeoutMs` or until the user calls `recorder.stop()`.
-   * Returns the resulting Blob or null on silence/error.
-   *
-   * The controller wires `recorder.stop()` to the action button or to silence.
-   * For now, we just wait for either the timeout or an explicit stop signal
-   * by polling the recorder state.
+   * Record audio for up to `timeoutMs` or until silence is detected.
+   * POSTs the recording to the backend (which proxies to ElevenLabs/OmniRoute).
+   * Returns the transcript or null on silence/error.
    */
-  private async _listenOmniRoute(
+  private async _listenBackend(
     language: VoiceLanguage,
     timeoutMs: number,
   ): Promise<string | null> {
@@ -149,8 +192,6 @@ export class OmniRouteVoiceProvider implements VoiceProvider {
       const poll = setInterval(() => {
         if (recorder.state === "idle") {
           clearInterval(poll)
-          // We must ask the hook to flush; the hook accumulates the blob on stop().
-          // Use the public stop() to finalize.
           recorder
             .stop()
             .then((b) => resolve(b))

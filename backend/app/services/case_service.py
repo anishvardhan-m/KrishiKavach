@@ -117,15 +117,21 @@ async def create_case_from_prediction(
 async def get_cases_due_for_follow_up(
     session: AsyncSession,
     as_of_date: Optional[date] = None,
+    farmer_id: Optional[UUID] = None,
 ) -> list[Case]:
-    """Return all active cases where next_follow_up_at <= as_of_date."""
+    """Return active cases where next_follow_up_at <= as_of_date.
+
+    When farmer_id is provided, only that farmer's cases are returned.
+    """
     check_date = as_of_date or get_demo_date()
     stmt = (
         select(Case)
         .where(Case.case_status == "active")
         .where(Case.next_follow_up_at <= check_date)
-        .order_by(Case.next_follow_up_at)
     )
+    if farmer_id is not None:
+        stmt = stmt.where(Case.farmer_id == farmer_id)
+    stmt = stmt.order_by(Case.next_follow_up_at)
     result = await session.execute(stmt)
     return list(result.scalars().all())
 

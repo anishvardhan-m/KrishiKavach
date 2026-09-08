@@ -8,14 +8,15 @@
 //
 // Provider architecture:
 //   - OmniRouteVoiceProvider (primary): records audio, sends to backend,
-//     backend calls OmniRoute for STT/TTS. API key is never exposed.
+//     backend calls ElevenLabs (STT + TTS) or OmniRoute. API key is never exposed.
 //   - WebSpeechProvider (fallback): browser Web Speech API.
 //
 // The active provider is chosen based on the backend's /api/voice/config:
-//   if provider == "omniroute" → OmniRoute (with browser fallback inside)
+//   if stt_provider or tts_provider is "elevenlabs" or "omniroute"
+//     → backend (with browser fallback inside)
 //   else → browser fallback
 
-import { fetchVoiceConfig, isOmniRouteUnavailable, type VoiceConfig } from "./omniroute"
+import { fetchVoiceConfig, isOmniRouteUnavailable, isAutoplayBlocked, type VoiceConfig } from "./omniroute"
 import { OmniRouteVoiceProvider } from "./OmniRouteVoiceProvider"
 import {
   getVoiceProvider,
@@ -72,8 +73,12 @@ export interface VoiceController {
   isRecognitionSupported(): boolean
   /** Which provider is currently active. */
   getActiveProvider(): "omniroute" | "browser" | "none"
+  /** Get the loaded voice config (after loadConfig has run). */
+  getConfig(): VoiceConfig | null
   /** Last error message, if any. */
   getLastError(): string | null
+  /** Whether the last error was an autoplay block (browser policy). */
+  isAutoplayBlocked(): boolean
   /** Clear last error. */
   clearError(): void
 }
@@ -89,6 +94,7 @@ export function createVoiceController(
   let language: VoiceLanguage = "hi-IN"
   let status: VoiceStatus = "idle"
   let lastError: string | null = null
+  let lastErrorAutoplay = false
   const statusListeners = new Set<(s: VoiceStatus) => void>()
   const interimListeners = new Set<(t: string) => void>()
 
@@ -98,6 +104,9 @@ export function createVoiceController(
 
   // Providers
   const browserProvider: VoiceProvider = getVoiceProvider()
+  // omniProvider handles STT (via backend /api/voice/transcribe which routes to
+  // ElevenLabs or OmniRoute) and TTS (via backend /api/voice/speak which routes
+  // to ElevenLabs or OmniRoute depending on VOICE_TTS_PROVIDER).
   const omniProvider: OmniRouteVoiceProvider = new OmniRouteVoiceProvider({
     getRecorder:
       deps.getRecorder ??
@@ -116,8 +125,9 @@ export function createVoiceController(
     statusListeners.forEach((cb) => cb(s))
   }
 
-  const setError = (msg: string) => {
+  const setError = (msg: string, autoplayBlocked = false) => {
     lastError = msg
+    lastErrorAutoplay = autoplayBlocked
     callbacks.onError?.(msg)
   }
 
@@ -130,29 +140,45 @@ export function createVoiceController(
       // Backend unreachable; use browser fallback
       config = {
         provider: "browser",
+        stt_provider: "browser",
+        tts_provider: "browser",
         default_language: "hi-IN",
         stt_model: null,
         tts_model: null,
         tts_voice: null,
+        elevenlabs_stt_model: null,
+        elevenlabs_voice_id: null,
+        elevenlabs_model_id: null,
         browser_fallback_supported: true,
       }
       configLoaded = true
     }
   }
 
-  // Determine which provider is "active" given the loaded config
+  // Determine which provider is "active" given the loaded config.
+  // Backend STT is available when stt_provider is ElevenLabs or OmniRoute.
+  // Backend TTS is available when tts_provider is ElevenLabs or OmniRoute.
+  // The frontend uses the same /api/voice/speak endpoint for all backend TTS.
   const activeProvider = (): "omniroute" | "browser" | "none" => {
-    if (config?.provider === "omniroute" && omniProvider.isSupported()) {
+    const sttBackend =
+      config?.stt_provider === "elevenlabs" || config?.stt_provider === "omniroute"
+    const ttsBackend =
+      config?.tts_provider === "elevenlabs" || config?.tts_provider === "omniroute"
+    if ((sttBackend || ttsBackend) && omniProvider.isSupported()) {
       return "omniroute"
     }
     if (browserProvider.isSupported()) return "browser"
     return "none"
   }
 
-  // The provider actually used for STT/TTS (OmniRoute with internal browser fallback,
-  // or browser if OmniRoute is disabled).
+  // The provider actually used for STT/TTS (backend with internal browser fallback,
+  // or browser if the backend is disabled).
   const getProvider = (): VoiceProvider | null => {
-    if (config?.provider === "omniroute" && omniProvider.isSupported()) {
+    const sttBackend =
+      config?.stt_provider === "elevenlabs" || config?.stt_provider === "omniroute"
+    const ttsBackend =
+      config?.tts_provider === "elevenlabs" || config?.tts_provider === "omniroute"
+    if ((sttBackend || ttsBackend) && omniProvider.isSupported()) {
       return omniProvider
     }
     if (browserProvider.isSupported()) return browserProvider
@@ -178,10 +204,13 @@ export function createVoiceController(
         }
         await p.speak(text, language)
       } catch (e) {
-        if (isOmniRouteUnavailable(e)) {
+        if (isAutoplayBlocked(e)) {
+          // Browser autoplay blocked — tell App to show the retry button.
+          setError("Browser autoplay blocked. Tap the button to hear the message.", true)
+        } else if (isOmniRouteUnavailable(e)) {
           // Already handled inside the provider; nothing more to do.
         } else {
-          setError((e as Error).message || "Speech synthesis failed")
+          setError((e as Error).message || "Speech synthesis failed", false)
         }
       } finally {
         if (status === "speaking") setStatus("idle")
@@ -305,12 +334,21 @@ export function createVoiceController(
       return activeProvider()
     },
 
+    getConfig() {
+      return config
+    },
+
     getLastError() {
       return lastError
     },
 
+    isAutoplayBlocked() {
+      return lastErrorAutoplay
+    },
+
     clearError() {
       lastError = null
+      lastErrorAutoplay = false
     },
   }
 }
